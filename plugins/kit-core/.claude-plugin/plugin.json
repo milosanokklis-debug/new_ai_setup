@@ -1,0 +1,9 @@
+{
+  "name": "kit-core",
+  "version": "0.1.0",
+  "description": "kit-core for agent-kit",
+  "license": "MIT",
+  "author": {
+    "name": "Zeepo"
+  }
+}

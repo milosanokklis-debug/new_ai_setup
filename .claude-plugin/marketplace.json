@@ -1,0 +1,50 @@
+{
+  "name": "agent-kit",
+  "owner": {
+    "name": "Zeepo"
+  },
+  "description": "Personal Claude Code kit: core + design + code packs",
+  "metadata": {
+    "description": "Personal Claude Code kit: core + design + code packs",
+    "version": "0.1.0"
+  },
+  "allowCrossMarketplaceDependenciesOn": [
+    "addy-agent-skills",
+    "superpowers-marketplace",
+    "mattpocock",
+    "hallmark",
+    "design-plugins"
+  ],
+  "plugins": [
+    {
+      "name": "kit-core",
+      "source": "./plugins/kit-core",
+      "version": "0.1.0",
+      "description": "Always-on base: methodology layer, Matt Pocock's planning skills, find-skills (manual).",
+      "dependencies": [
+        "agent-skills@addy-agent-skills",
+        "mattpocock-skills@mattpocock"
+      ]
+    },
+    {
+      "name": "kit-design",
+      "source": "./plugins/kit-design",
+      "version": "0.1.0",
+      "description": "UI pack: designer + design-auditor agents, shadcn, emil-design-eng, Hallmark, Design and Refine.",
+      "dependencies": [
+        "kit-core",
+        "hallmark@hallmark",
+        "design-and-refine@design-plugins"
+      ]
+    },
+    {
+      "name": "kit-code",
+      "source": "./plugins/kit-code",
+      "version": "0.1.0",
+      "description": "Code pack: coder, reviewer and simplicity-reviewer agents, ponytail-review.",
+      "dependencies": [
+        "kit-core"
+      ]
+    }
+  ]
+}
