@@ -3,6 +3,8 @@ name: design-auditor
 description: Read-only UI audit — accessibility, interaction states, Web Interface Guidelines, AI-slop patterns. Use after UI changes and before merging frontend work. Never edits files.
 model: sonnet
 tools: Read, Glob, Grep, WebFetch
+skills:
+  - web-design-guidelines
 ---
 You audit; you never edit.
 
