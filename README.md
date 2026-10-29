@@ -140,7 +140,7 @@ Then:
 cd ~/code/my-app && claude
 ```
 
-The first time, Claude Code asks me to approve the `basic-memory` server. I say yes, then run `/basic-memory:bm-setup` once.
+The first time, Claude Code asks me to approve the `basic-memory` server. I say yes. From then on it starts by itself every session.
 
 To add the kit to a project that already exists, use `./agent-kit.sh project <path> design code` (no repo changes), or `./agent-kit.sh repo <path>` to add only the gates.
 
@@ -177,35 +177,77 @@ sequenceDiagram
 
 ## Basic Memory
 
-Claude forgets everything when a session ends. Basic Memory gives it a notebook that survives: a folder of plain Markdown notes it can search, read and write, with links between notes forming a small knowledge graph.
+Claude forgets everything when a session ends. Basic Memory gives each project a notebook that survives: a folder of plain Markdown notes Claude can search, read and write. Notes carry a type (`decision`, `task`, `session`…) and a status (`open`, `active`…), so Claude can pull up exactly "the open decisions" instead of guessing.
+
+### When it runs
+
+Nothing runs in the background. Every time I start `claude` in a project folder, Claude Code starts Basic Memory for that session and stops it when I quit. Starting it automatically is built in. The only manual step is approving the server the first time I open each project.
 
 ```mermaid
-flowchart LR
-    S["Session starts"] -->|plugin hook| B["Briefing:<br/>recent notes loaded"]
-    B --> W["Working:<br/>search / read / write notes<br/>through the MCP server"]
-    W -->|before the context fills up| C["Checkpoint:<br/>session saved as a note"]
-    C --> N[("~/basic-memory/my-app/*.md")]
-    W --> N
-    N --> S
+sequenceDiagram
+    actor Me
+    participant CC as Claude Code
+    participant BM as Basic Memory
+    participant N as ~/basic-memory/my-app/*.md
+
+    Me->>CC: claude (in ~/code/my-app)
+    CC->>BM: start the MCP server (from .mcp.json)
+    CC->>BM: session-start hook
+    BM->>N: find open decisions, active tasks, recent sessions
+    BM-->>CC: short briefing, added before my first message
+    Me->>CC: "let's use Postgres, we need concurrent writers"
+    CC->>BM: write a decision note (output style reflex)
+    BM->>N: decisions/use-postgres.md
+    Note over CC: context fills up, Claude is about to compact
+    CC->>BM: pre-compact hook
+    BM->>N: sessions/… checkpoint (what was being worked on)
+    Me->>CC: /exit (Basic Memory stops too)
 ```
 
-**What the script sets up** (step 5 of `project`, skipped with `--no-memory`):
+### What happens at each step
+
+| When | What Basic Memory does | Why it matters |
+|---|---|---|
+| **Session starts** | A hook adds a short briefing before my first message: open decisions, active tasks, recent checkpoints. | The session starts knowing where things stand instead of cold. |
+| **While working** | Claude searches notes before answering "what did we decide…" questions, and writes a `decision` note when I make a real choice (the `basic-memory` output style). The AGENTS.md rule backs this up. | Decisions get recorded as they happen, with the reason. |
+| **Before compaction** | When the conversation gets too long, Claude Code summarizes it to make room. Right before that, a hook saves a `session` checkpoint note. | The detail that compaction throws away is kept, and the next session's briefing picks it up. |
+| **Next session** | The briefing includes the new decisions and the last checkpoint. | Continuity across days without re-explaining. |
+
+The briefing only lists notes with `type` and `status` set. That's why decisions and checkpoints use those fields, and why the briefing is short (a few hundred tokens), not a dump of every note.
+
+### What the script sets up
+
+All of this happens in `new` and `project`. Skip it with `--no-memory`.
 
 | Part | What it does | Where |
 |---|---|---|
-| uv | Runs Basic Memory. Installed with Homebrew if missing. | system |
-| A Basic Memory project | One notes folder per code project, so memories don't mix. | `~/basic-memory/<project-name>` (change with `BM_HOME`) |
-| MCP server | Gives Claude the note tools, locked to this project's notes. | `.mcp.json` (committed) |
-| Basic Memory plugin | Session-start briefing, checkpoint before compaction, `/basic-memory:*` commands. | `.claude/settings.json` (committed) |
+| uv + the `basic-memory` command | Runs Basic Memory. The plugin's hooks look for the command on PATH. | system, `~/.local/bin` |
+| A Basic Memory project | One notes folder per code project, so projects never see each other's notes. | `~/basic-memory/<project>` (change with `BM_HOME`) |
+| MCP server | Gives Claude the note tools, locked to this project's notes. Started by Claude Code each session. | `.mcp.json` (committed) |
+| Basic Memory plugin | The session-start and pre-compact hooks, plus the `/basic-memory:bm-*` commands. | `.claude/settings.json` (committed) |
+| `primaryProject` setting | Tells the hooks which notes to brief from and save checkpoints into. Without it, nothing is saved automatically. | `.claude/settings.json` |
+| `outputStyle: basic-memory` | The "search first, record decisions" habits. About 700 tokens per turn. Remove the line to turn it off. | `.claude/settings.json` |
 | Rule in AGENTS.md | "Search Basic Memory before starting; record new decisions when done." | `AGENTS.md` |
 
-**Using it:**
+### Commands
 
-- Just talk: "remember that we chose Postgres because…", "what did we decide about auth?"
-- `/basic-memory:remember` saves something on purpose. `/basic-memory:status` shows what's connected.
-- The notes are ordinary Markdown. Open `~/basic-memory/<project>` in Obsidian or any editor to read or fix them. Claude sees the edits.
-- From the terminal: `uvx basic-memory project list`, `uvx basic-memory tail --project my-app`.
-- The notes live **outside** the repo on purpose. They're my working memory, not project code, and they never get pushed.
+| Command | Use it to |
+|---|---|
+| `/basic-memory:bm-remember <text>` | Save a quick fact or reminder |
+| `/basic-memory:bm-decide` | Record a decision properly: why, alternatives, consequences |
+| `/basic-memory:bm-checkpoint` | Save where I am before stopping (pairs well with `/handoff`) |
+| `/basic-memory:bm-orient` | Have Claude read the notes and summarize where things stand |
+| `/basic-memory:bm-status` | Check it's connected and which notes it's using |
+| `/basic-memory:bm-setup` | Optional: a short interview that tunes folders and note templates |
+
+I can also just say "remember that…" or "what did we decide about auth?".
+
+### Good to know
+
+- The notes are ordinary Markdown. I can open `~/basic-memory/<project>` in Obsidian or any editor to read or fix them, and Claude sees the changes.
+- They live **outside** the repo on purpose. They're my working memory, not project code, and they never get pushed. To use them on another machine, copy that folder, or use Basic Memory Cloud.
+- From the terminal: `basic-memory project list`, `basic-memory tail --project my-app`.
+- If the briefing is missing, run `/basic-memory:bm-status`. Usually the server wasn't approved yet, or `basic-memory` isn't on PATH (run `./agent-kit.sh setup`).
 
 ---
 
@@ -275,7 +317,7 @@ Before adding any new skill, run `./agent-kit.sh doctor --scan` (AgentShield che
 | Claude doesn't use my agents or rules | Start it inside the project folder, not the kit folder |
 | Push stopped: "reviewer didn't return a verdict" | Run `claude`, type `/status`: signed in? out of Pro usage? Log in `.git/kit-review/*.err` |
 | Usage billed to the API | `unset ANTHROPIC_API_KEY`, then `/status` |
-| Basic Memory tools missing in Claude | Approve the server when asked, or run `claude mcp get basic-memory`. Is `uv` installed? |
+| Basic Memory tools or briefing missing | Approve the server when asked, then `/basic-memory:bm-status`. Re-run `./agent-kit.sh setup` if `basic-memory` isn't found |
 | "couldn't turn on branch protection" | Private repo on a free plan. Make it public or skip it. The hooks still work. |
 | A plugin change isn't showing up | `claude plugin marketplace update agent-kit`, then restart Claude Code |
 

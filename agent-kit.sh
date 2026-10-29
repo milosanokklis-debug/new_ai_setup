@@ -845,6 +845,13 @@ PY
     uvx basic-memory project add "$name" "$dir" >/dev/null || warn "couldn't create the Basic Memory project — run: uvx basic-memory project add $name $dir"
   fi
 
+  # the plugin's hooks look for the basic-memory command on PATH
+  if ! command -v basic-memory >/dev/null 2>&1; then
+    say "installing the basic-memory command (uv tool)"
+    uv tool install -q basic-memory >/dev/null 2>&1 || warn "couldn't install basic-memory as a uv tool — run: uv tool install basic-memory"
+    on_path_local_bin
+  fi
+
   if grep -q '"basic-memory@basicmachines-co"' "$proj/.claude/settings.json" 2>/dev/null; then
     say "Basic Memory plugin already enabled"
   else
@@ -852,7 +859,21 @@ PY
     (cd "$proj" && uvx basic-memory install claude-code --scope project --yes >/dev/null) \
       || warn "Basic Memory plugin install failed — run inside the project: uvx basic-memory install claude-code --scope project"
   fi
-  say "Basic Memory ready: notes in $dir. Open Claude Code there, approve the basic-memory server when asked, then run /basic-memory:bm-setup once."
+  # point the plugin at this project's notes: without primaryProject the briefing has nothing to read
+  # and the save-before-compaction hook writes nothing. outputStyle turns on the capture reflexes.
+  python3 - "$proj/.claude/settings.json" "$name" <<'PY'
+import json, os, sys
+p, name = sys.argv[1], sys.argv[2]
+s = json.load(open(p)) if os.path.exists(p) else {}
+bm = s.setdefault("basicMemory", {})
+bm.setdefault("primaryProject", name)
+bm.setdefault("captureFolder", "sessions")
+bm.setdefault("rememberFolder", "bm-remember")
+s.setdefault("outputStyle", "basic-memory")
+json.dump(s, open(p, "w"), indent=2); open(p, "a").write("\n")
+PY
+
+  say "Basic Memory ready: notes in $dir. Open Claude Code there and approve the basic-memory server when asked. Optional: /basic-memory:bm-setup to fine-tune."
 }
 
 cmd_project() {
