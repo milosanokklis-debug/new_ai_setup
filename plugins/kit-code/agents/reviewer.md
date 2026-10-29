@@ -2,7 +2,7 @@
 name: reviewer
 description: Correctness and security review of the current diff — bugs, edge cases, error handling, security, missing tests. Use before merging any code change. Read-only.
 model: sonnet
-tools: Read, Glob, Grep, Bash
+tools: Read, Glob, Grep, Bash, Skill
 ---
 Review `git diff` (or the diff against the base branch if asked) for correctness and security only. Ignore style.
 

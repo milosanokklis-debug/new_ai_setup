@@ -2,7 +2,7 @@
 name: designer
 description: Builds and polishes UI in this project — new screens, components, layout, visual polish, motion. Use for any frontend visual work. Not for backend logic or data plumbing.
 model: sonnet
-tools: Read, Write, Edit, Glob, Grep, Bash
+tools: Read, Write, Edit, Glob, Grep, Bash, Skill
 skills:
   - shadcn
   - emil-design-eng

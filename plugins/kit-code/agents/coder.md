@@ -2,7 +2,7 @@
 name: coder
 description: Implements features and fixes in this project's code — writing code, tests, refactors. Use for scoped implementation tasks with a clear goal. Not for UI visual design.
 model: sonnet
-tools: Read, Write, Edit, Glob, Grep, Bash
+tools: Read, Write, Edit, Glob, Grep, Bash, Skill
 ---
 You implement one scoped task at a time.
 

@@ -35,7 +35,7 @@ flowchart TB
     end
 
     core["kit-core skills<br/>planning, TDD, handoff<br/>find-skills (manual only)"] -.-> main
-    bm[("Basic Memory<br/>~/basic-memory/&lt;project&gt;")] <--> main
+    bm[("Basic Memory<br/>~/basic-memory-projects/&lt;project&gt;")] <--> main
     main --> gate{{"Push gate<br/>gitleaks → verify → fresh reviewer"}}
     gate --> gh[("GitHub<br/>CI must be green to merge")]
 ```
@@ -47,7 +47,7 @@ flowchart TB
 | **Skills** | Reusable know-how (how to do TDD, how to use shadcn…). Only the one-line description loads until a skill is used. | the plugins and their dependencies |
 | **Packs** | `kit-core` (always), `kit-design` (frontend projects), `kit-code` (any code). | installed per project |
 | **AGENTS.md / CLAUDE.md** | The project's rules. `CLAUDE.md` imports `AGENTS.md` and adds a short note on which agent to use for what. | in each project |
-| **Basic Memory** | Long-term memory: plain Markdown notes Claude reads and writes through an MCP server. | `~/basic-memory/<project>` |
+| **Basic Memory** | Long-term memory: plain Markdown notes Claude reads and writes through an MCP server. | `~/basic-memory-projects/<project>` |
 | **Push gate** | Git hooks plus GitHub Actions that block bad pushes and merges. | `.githooks/`, `scripts/`, `.github/` |
 
 ---
@@ -97,7 +97,7 @@ flowchart LR
             a["my-app/<br/>.claude/ · CLAUDE.md · AGENTS.md<br/>.mcp.json · .githooks/"]
             b["other-app/<br/>its own copy of the same"]
         end
-        subgraph mem["basic-memory/"]
+        subgraph mem["basic-memory-projects/"]
             ma["my-app/ notes"]
             mb["other-app/ notes"]
         end
@@ -188,7 +188,7 @@ sequenceDiagram
     actor Me
     participant CC as Claude Code
     participant BM as Basic Memory
-    participant N as ~/basic-memory/my-app/*.md
+    participant N as ~/basic-memory-projects/my-app/*.md
 
     Me->>CC: claude (in ~/code/my-app)
     CC->>BM: start the MCP server (from .mcp.json)
@@ -222,7 +222,7 @@ All of this happens in `new` and `project`. Skip it with `--no-memory`.
 | Part | What it does | Where |
 |---|---|---|
 | uv + the `basic-memory` command | Runs Basic Memory. The plugin's hooks look for the command on PATH. | system, `~/.local/bin` |
-| A Basic Memory project | One notes folder per code project, so projects never see each other's notes. | `~/basic-memory/<project>` (change with `BM_HOME`) |
+| A Basic Memory project | One notes folder per code project, so projects never see each other's notes. | `~/basic-memory-projects/<project>` (change with `BM_HOME`; not inside `~/basic-memory`, which is Basic Memory's own default project) |
 | MCP server | Gives Claude the note tools, locked to this project's notes. Started by Claude Code each session. | `.mcp.json` (committed) |
 | Basic Memory plugin | The session-start and pre-compact hooks, plus the `/basic-memory:bm-*` commands. | `.claude/settings.json` (committed) |
 | `primaryProject` setting | Tells the hooks which notes to brief from and save checkpoints into. Without it, nothing is saved automatically. | `.claude/settings.json` |
@@ -244,7 +244,7 @@ I can also just say "remember that…" or "what did we decide about auth?".
 
 ### Good to know
 
-- The notes are ordinary Markdown. I can open `~/basic-memory/<project>` in Obsidian or any editor to read or fix them, and Claude sees the changes.
+- The notes are ordinary Markdown. I can open `~/basic-memory-projects/<project>` in Obsidian or any editor to read or fix them, and Claude sees the changes.
 - They live **outside** the repo on purpose. They're my working memory, not project code, and they never get pushed. To use them on another machine, copy that folder, or use Basic Memory Cloud.
 - From the terminal: `basic-memory project list`, `basic-memory tail --project my-app`.
 - If the briefing is missing, run `/basic-memory:bm-status`. Usually the server wasn't approved yet, or `basic-memory` isn't on PATH (run `./agent-kit.sh setup`).
@@ -273,11 +273,13 @@ flowchart TD
     ci -->|green| merge["✅ mergeable"]
 ```
 
-**Why the reviewer has no buy-in:** it's a brand-new Claude process each push. It never saw the plan, the conversation, or my commit messages (the author's framing). It sees only the diff and can read files but not change them. It only blocks for real problems: bugs that break things, data loss, leaked secrets, security holes.
+**Why the reviewer has no buy-in:** it's a brand-new Claude process each push. It never saw the plan, the conversation, or my commit messages (the author's framing). It's also cut off from the project's plugins, hooks, MCP servers and skills, so the Basic Memory briefing never reaches it and it never writes notes. It sees only the diff. It can read files for context but not change them, and it can't read `.env`, `.pem` or `.key` files. It only blocks for real problems: bugs that break things, data loss, leaked secrets, security holes.
+
+Only the reviewer's final line counts (`VERDICT: PASS` or `VERDICT: BLOCK`). Anything else, including no answer at all, stops the push.
 
 **Green light** means `scripts/verify.sh` passes. It guesses the stack (npm, pytest, cargo, go). I should replace the guesses with the project's real commands as it grows.
 
-**Saving Pro usage:** docs-only pushes skip the review, and a commit that already passed isn't reviewed again. Set `REVIEW_MODEL=haiku` for cheaper reviews when I'm near my limits.
+**Saving Pro usage:** docs-only pushes (`.md`, `.txt`, `docs/`) skip the review. Agent instructions don't count as docs: changes to `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.githooks/`, `scripts/` or `.github/` are always reviewed. A commit that already passed isn't reviewed again. A very large diff gets a partial review that isn't cached. Set `REVIEW_MODEL=haiku` for cheaper reviews when I'm near my limits.
 
 **Escape hatches** (use rarely; Claude is told never to use them unless I say so):
 
@@ -305,6 +307,8 @@ My Pro usage is shared between the Claude app and Claude Code, and every subagen
 | `REVIEW_MODEL=haiku` | Cheaper push reviews. |
 
 Before adding any new skill, run `./agent-kit.sh doctor --scan` (AgentShield checks agent config for risky permissions and prompt injection).
+
+The packs pull skills from a few third-party GitHub marketplaces (Addy Osmani, Matt Pocock, Hallmark, Design and Refine, Basic Memory). My own skills are vendored at pinned commits (`VENDORED.md`); the upstream plugins update when their authors push. That's a trust decision. Run `doctor --scan` after updates.
 
 ---
 
