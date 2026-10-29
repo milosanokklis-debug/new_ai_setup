@@ -52,14 +52,17 @@ flowchart TB
 
 ---
 
-## One-time setup
+## One-time setup (per machine)
 
-1. **Install the tools** (macOS with Homebrew shown; Linux/WSL work too):
+1. **Get the kit and install everything it needs.** `setup` installs git, Python, Claude Code, gitleaks, uv (for Basic Memory), the GitHub CLI and Node with Homebrew on macOS or apt/dnf on Linux and WSL. It skips anything already installed and upgrades a gitleaks that's too old.
 
    ```bash
-   brew install git gh gitleaks uv python
-   curl -fsSL https://claude.ai/install.sh | bash   # Claude Code
+   git clone https://github.com/milosanokklis-debug/new_ai_setup ~/agent-kit
+   cd ~/agent-kit
+   ./agent-kit.sh setup
    ```
+
+   On a Mac without Homebrew, `setup` stops and prints the one-line Homebrew install command. If it says to add `~/.local/bin` to my PATH, I add that line to `~/.zshrc` and open a new terminal.
 
 2. **Sign in with my Pro plan, not an API key.**
 
@@ -69,16 +72,44 @@ flowchart TB
    gh auth login                # so the script can create GitHub repos
    ```
 
-   If `ANTHROPIC_API_KEY` is set, Claude Code uses it instead of Pro and bills the API.
+   If `ANTHROPIC_API_KEY` is set, Claude Code uses it instead of Pro and bills the API. `setup` warns me if it's set.
 
-3. **Register the marketplaces** (from this repo's folder):
+3. **Register the marketplaces:**
 
    ```bash
    ./agent-kit.sh register .
-   export KIT_REPO=milosanokklis-debug/new_ai_setup   # add to ~/.zshrc
+   echo 'export KIT_REPO=milosanokklis-debug/new_ai_setup' >> ~/.zshrc
    ```
 
    Registering only adds catalogs. Nothing loads into Claude until a project installs a pack.
+
+---
+
+## Where things live
+
+Projects go **next to** the kit, never inside it. The script refuses to create a project inside the kit folder.
+
+```mermaid
+flowchart LR
+    subgraph home["~ (home folder)"]
+        kit["agent-kit/<br/>this repo: the script + plugin packs<br/>run agent-kit.sh from here"]
+        subgraph code["code/"]
+            a["my-app/<br/>.claude/ · CLAUDE.md · AGENTS.md<br/>.mcp.json · .githooks/"]
+            b["other-app/<br/>its own copy of the same"]
+        end
+        subgraph mem["basic-memory/"]
+            ma["my-app/ notes"]
+            mb["other-app/ notes"]
+        end
+    end
+    kit -. "new / project installs into" .-> a & b
+    a <--> ma
+    b <--> mb
+```
+
+**Always start Claude inside the project's folder** (`cd ~/code/my-app && claude`). Which agents, skills, rules and Basic Memory notes Claude uses is decided by the folder it starts in. Started from the kit folder or my home folder, Claude has none of the project's setup.
+
+Having lots of projects doesn't cost context. Claude Code reads files only when it needs them, and each project only sees its own packs and its own notes.
 
 ---
 
@@ -239,7 +270,9 @@ Before adding any new skill, run `./agent-kit.sh doctor --scan` (AgentShield che
 
 | Problem | Fix |
 |---|---|
-| "gitleaks is not installed" and nothing will commit | `brew install gitleaks` |
+| "gitleaks is not installed" or "too old", and nothing will commit | `./agent-kit.sh setup` |
+| A command isn't found right after `setup` | Add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc`, open a new terminal |
+| Claude doesn't use my agents or rules | Start it inside the project folder, not the kit folder |
 | Push stopped: "reviewer didn't return a verdict" | Run `claude`, type `/status`: signed in? out of Pro usage? Log in `.git/kit-review/*.err` |
 | Usage billed to the API | `unset ANTHROPIC_API_KEY`, then `/status` |
 | Basic Memory tools missing in Claude | Approve the server when asked, or run `claude mcp get basic-memory`. Is `uv` installed? |
@@ -252,7 +285,8 @@ Before adding any new skill, run `./agent-kit.sh doctor --scan` (AgentShield che
 
 | Command | Does |
 |---|---|
-| `./agent-kit.sh new <path> [design] [code]` | Everything: repo, gates, packs, Basic Memory, GitHub |
+| `./agent-kit.sh setup` | Install every tool the kit needs (once per machine; safe to re-run) |
+| `./agent-kit.sh new <path> [design] [code]` | Everything: repo, gates, packs, Basic Memory, GitHub. Installs missing tools first |
 | `./agent-kit.sh project <path> [design] [code]` | Packs, AGENTS.md/CLAUDE.md and Basic Memory only |
 | `./agent-kit.sh repo <path>` | Gates and GitHub only |
 | `./agent-kit.sh doctor [--scan]` | What's installed and what it costs per turn |

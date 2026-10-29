@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # agent-kit.sh — build and use a personal Claude Code plugin marketplace.
 #
+#   ./agent-kit.sh setup                              install everything below that's missing (brew/apt/dnf)
 #   ./agent-kit.sh init     [kit-dir]                 build the marketplace repo (default ./agent-kit)
 #   ./agent-kit.sh sync     [kit-dir]                 re-pull vendored skills from upstream
 #   ./agent-kit.sh register [kit-dir]                 add upstream + kit marketplaces to your user settings
@@ -21,9 +22,8 @@
 #   REVIEW_MODEL=sonnet|opus|haiku    model for the pre-push reviewer (default sonnet; REVIEWER=off disables)
 #   BM_HOME=~/basic-memory            where each project's Basic Memory notes folder is created
 #
-# Requires: claude (Claude Code CLI), git, python3, uv (Basic Memory; installed via Homebrew if missing).
-# Optional: node (AgentShield),
-# gh + gitleaks (repo/new). Everything AI runs on your Claude Pro/Max login.
+# Requires: git, python3, claude (Claude Code), gitleaks, uv (Basic Memory), gh (GitHub). Optional: node.
+# `setup` installs any that are missing; `new` does it automatically. Everything AI runs on your Claude Pro/Max login.
 # macOS/Linux/WSL. On Windows use WSL or Git Bash.
 
 set -euo pipefail
@@ -62,10 +62,165 @@ warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing '$1' — $2"; }
 
+KIT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+outside_kit() { # project-path — projects must not live inside the kit repo
+  local real
+  real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1")"
+  case "$real/" in
+    "$KIT_DIR"/*) die "keep projects outside the kit folder ($KIT_DIR) — e.g. $0 new ~/code/$(basename "$real")" ;;
+  esac
+}
+
 check_prereqs() {
-  need claude  "install Claude Code first"
-  need git     "install git"
-  need python3 "install Python 3"
+  local t
+  for t in claude git python3; do
+    command -v "$t" >/dev/null 2>&1 || die "missing '$t' — run: $0 setup"
+  done
+}
+
+# ---------------------------------------------------------------- dependencies
+# Homebrew on macOS, apt or dnf on Linux/WSL, and the official installer or a checksum-verified
+# release binary where there's no package.
+DEPS_REQUIRED=(git python3 claude gitleaks uv gh)
+DEPS_OPTIONAL=(node)   # JS projects' verify.sh, and doctor --scan
+
+SUDO=""; [ "$(id -u)" = 0 ] || SUDO="sudo"
+APT_UPDATED=0
+
+pkg_manager() {
+  if command -v brew >/dev/null 2>&1; then echo brew
+  elif command -v apt-get >/dev/null 2>&1; then echo apt
+  elif command -v dnf >/dev/null 2>&1; then echo dnf
+  else echo none; fi
+}
+
+pkg_install() { # package-name (same name in brew/apt/dnf unless the caller maps it)
+  case "$(pkg_manager)" in
+    brew) brew install "$1" ;;
+    apt)  [ "$APT_UPDATED" = 1 ] || { $SUDO apt-get update -qq; APT_UPDATED=1; }
+          $SUDO apt-get install -y -qq "$1" ;;
+    dnf)  $SUDO dnf install -y -q "$1" ;;
+    *)    return 1 ;;
+  esac
+}
+
+on_path_local_bin() { # the official installers put tools in ~/.local/bin; put it first so new copies win
+  local p=":$PATH:"
+  p="${p//:$HOME\/.local\/bin:/:}"; p="${p#:}"; p="${p%:}"
+  export PATH="$HOME/.local/bin${p:+:$p}"
+  hash -r
+}
+
+install_gitleaks_binary() {
+  local os arch base tmp
+  case "$(uname -s)" in Linux) os=linux ;; Darwin) os=darwin ;; *) return 1 ;; esac
+  case "$(uname -m)" in x86_64|amd64) arch=x64 ;; arm64|aarch64) arch=arm64 ;; *) return 1 ;; esac
+  base="https://github.com/gitleaks/gitleaks/releases/download/v$GITLEAKS_VERSION"
+  tmp="$(mktemp -d)"
+  say "downloading gitleaks v$GITLEAKS_VERSION ($os/$arch) and checking its checksum"
+  curl -fsSL -o "$tmp/gl.tgz" "$base/gitleaks_${GITLEAKS_VERSION}_${os}_${arch}.tar.gz" \
+    && curl -fsSL -o "$tmp/sums" "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt" \
+    || { rm -rf "$tmp"; return 1; }
+  local want got
+  want="$(grep "gitleaks_${GITLEAKS_VERSION}_${os}_${arch}.tar.gz" "$tmp/sums" | awk '{print $1}')"
+  got="$( (sha256sum "$tmp/gl.tgz" 2>/dev/null || shasum -a 256 "$tmp/gl.tgz") | awk '{print $1}')"
+  [ -n "$want" ] && [ "$want" = "$got" ] || { rm -rf "$tmp"; warn "gitleaks checksum mismatch — not installing"; return 1; }
+  mkdir -p "$HOME/.local/bin"
+  tar -xzf "$tmp/gl.tgz" -C "$tmp" gitleaks && mv "$tmp/gitleaks" "$HOME/.local/bin/gitleaks" && chmod +x "$HOME/.local/bin/gitleaks"
+  rm -rf "$tmp"; on_path_local_bin
+}
+
+install_dep() { # tool
+  local pm; pm="$(pkg_manager)"
+  case "$1" in
+    claude)
+      say "installing Claude Code (official installer)"
+      curl -fsSL https://claude.ai/install.sh | bash && on_path_local_bin ;;
+    uv)
+      if [ "$pm" = brew ]; then brew install uv
+      else say "installing uv (official installer)"; curl -LsSf https://astral.sh/uv/install.sh | sh && on_path_local_bin; fi ;;
+    gitleaks)
+      if [ "$pm" = brew ]; then brew install gitleaks
+      else install_gitleaks_binary; fi ;;   # distro packages are often too old for `gitleaks git` (needs 8.19+)
+    gh)
+      pkg_install gh || { warn "no gh package here — see https://github.com/cli/cli#installation"; return 1; } ;;
+    node)
+      case "$pm" in brew) brew install node ;; apt) pkg_install nodejs && pkg_install npm ;; *) pkg_install nodejs ;; esac ;;
+    python3)
+      case "$pm" in brew) brew install python ;; *) pkg_install python3 ;; esac ;;
+    git)
+      pkg_install git ;;
+    *) return 1 ;;
+  esac
+}
+
+have() { # tool — present and new enough
+  case "$1" in
+    gitleaks) command -v gitleaks >/dev/null 2>&1 && gitleaks git --help >/dev/null 2>&1 ;;
+    *)        command -v "$1" >/dev/null 2>&1 ;;
+  esac
+}
+
+ensure_tools() { # tool... — installs whatever is missing or too old; returns 1 if any still is
+  local t missing=()
+  for t in "$@"; do have "$t" || missing+=("$t"); done
+  [ "${#missing[@]}" -eq 0 ] && return 0
+  if [ "$(pkg_manager)" = none ] && [ "$(uname -s)" = Darwin ]; then
+    die "Homebrew is needed to install ${missing[*]}. Install it first: /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+  fi
+  for t in "${missing[@]}"; do
+    say "installing $t"
+    install_dep "$t" || warn "couldn't install $t automatically"
+  done
+  local still=()
+  for t in "${missing[@]}"; do have "$t" || still+=("$t"); done
+  [ "${#still[@]}" -eq 0 ] || { warn "still missing: ${still[*]}"; return 1; }
+}
+
+cmd_setup() {
+  ORIG_PATH="$PATH"
+  on_path_local_bin
+  say "checking dependencies ($(pkg_manager))"
+  ensure_tools "${DEPS_REQUIRED[@]}" || warn "fix the tools above, then run: $0 setup"
+  ensure_tools "${DEPS_OPTIONAL[@]}" || true
+
+  echo; say "installed"
+  local t v
+  for t in "${DEPS_REQUIRED[@]}" "${DEPS_OPTIONAL[@]}"; do
+    if have "$t"; then
+      case "$t" in
+        gitleaks) v="$(gitleaks version 2>/dev/null)" ;;
+        *)        v="$("$t" --version 2>/dev/null | head -n1)" ;;
+      esac
+      printf '   %-9s %s\n' "$t" "${v:-installed}"
+    else
+      printf '   %-9s MISSING\n' "$t"
+    fi
+  done
+
+  # the hooks run in your normal shell, so an old gitleaks earlier on PATH would still be found first
+  local gl old
+  if [ -x "$HOME/.local/bin/gitleaks" ]; then
+    gl="$HOME/.local/bin/gitleaks"
+    old="$(env PATH="${ORIG_PATH:-$PATH}" sh -c 'command -v gitleaks' 2>/dev/null || true)"
+    if [ -n "$old" ] && [ "$old" != "$gl" ] && ! "$old" git --help >/dev/null 2>&1; then
+      warn "an old gitleaks at $old comes before $gl in your PATH, so the git hooks would use it."
+      warn "remove it (e.g. sudo apt remove gitleaks) or put ~/.local/bin first in your PATH."
+    fi
+  fi
+
+  echo; say "sign-ins"
+  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    warn "ANTHROPIC_API_KEY is set — Claude Code will bill the API instead of your Pro plan. Remove it from your shell profile and run: unset ANTHROPIC_API_KEY"
+  fi
+  echo "   Claude: run claude, log in with your claude.ai (Pro) account, then type /status to check"
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then echo "   GitHub: signed in"
+  else echo "   GitHub: run gh auth login"; fi
+  if [ -x "$HOME/.local/bin/claude" ] || [ -x "$HOME/.local/bin/uv" ] || [ -x "$HOME/.local/bin/gitleaks" ]; then
+    grep -qs '.local/bin' "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile" \
+      || warn "add this line to your shell profile so new terminals find the tools: export PATH=\"\$HOME/.local/bin:\$PATH\""
+  fi
 }
 
 # ---------------------------------------------------------------- vendoring
@@ -288,7 +443,11 @@ write_gates() {
 # agent-kit: block commits that contain secrets. Bypass once (not recommended): git commit --no-verify
 set -euo pipefail
 command -v gitleaks >/dev/null 2>&1 || {
-  echo "pre-commit: gitleaks is not installed, so secrets can't be checked. Install it: brew install gitleaks (or see github.com/gitleaks/gitleaks/releases)" >&2
+  echo "pre-commit: gitleaks is not installed, so secrets can't be checked. Install it: brew install gitleaks, or run agent-kit.sh setup" >&2
+  exit 1
+}
+gitleaks git --help >/dev/null 2>&1 || {
+  echo "pre-commit: your gitleaks ($(command -v gitleaks)) is too old (needs 8.19+). Run agent-kit.sh setup, or: brew upgrade gitleaks" >&2
   exit 1
 }
 gitleaks git --staged --no-banner --redact . || {
@@ -308,9 +467,10 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 empty="$(git hash-object -t tree /dev/null)"
 
-mapfile -t refs   # read all ref lines first; the steps below must not eat stdin
+refs=()   # read all ref lines first; the steps below must not eat stdin (no mapfile: macOS ships bash 3.2)
+while IFS= read -r line; do refs+=("$line"); done
 
-for line in "${refs[@]}"; do
+for line in "${refs[@]+"${refs[@]}"}"; do   # the +-guard keeps bash 3.2 happy when refs is empty
   read -r _lref lsha _rref rsha <<<"$line"
   [[ "$lsha" =~ ^0+$ ]] && continue                      # deleting a branch
   if [[ "$rsha" =~ ^0+$ ]]; then                          # new branch on the remote
@@ -323,7 +483,8 @@ for line in "${refs[@]}"; do
   if [ "$base" = "$empty" ]; then range="$lsha"; else range="$base..$lsha"; fi
 
   echo "[1/3] secrets: gitleaks"
-  command -v gitleaks >/dev/null 2>&1 || { echo "pre-push: gitleaks is not installed (brew install gitleaks)." >&2; exit 1; }
+  command -v gitleaks >/dev/null 2>&1 || { echo "pre-push: gitleaks is not installed (brew install gitleaks, or agent-kit.sh setup)." >&2; exit 1; }
+  gitleaks git --help >/dev/null 2>&1 || { echo "pre-push: gitleaks is too old (needs 8.19+) — run agent-kit.sh setup." >&2; exit 1; }
   gitleaks git --no-banner --redact --log-opts="$range" . </dev/null || {
     echo "pre-push: gitleaks found a secret in the commits you're pushing. Remove it from history and rotate it." >&2
     exit 1
@@ -487,13 +648,8 @@ YML
 }
 
 ensure_gitleaks() {
-  command -v gitleaks >/dev/null 2>&1 && return 0
-  if command -v brew >/dev/null 2>&1; then
-    say "installing gitleaks with Homebrew"
-    brew install gitleaks && return 0
-  fi
-  warn "gitleaks is not installed — commits and pushes in this project will be blocked until it is."
-  warn "install it: brew install gitleaks, or download v$GITLEAKS_VERSION from https://github.com/gitleaks/gitleaks/releases"
+  ensure_tools gitleaks && return 0
+  warn "gitleaks is not installed — commits and pushes in this project will be blocked until it is (run: $0 setup)"
 }
 
 protect_branch() { # owner/repo branch
@@ -511,6 +667,7 @@ protect_branch() { # owner/repo branch
 cmd_repo() {
   [ $# -ge 1 ] || die "usage: $0 repo <path> [--public] [--no-github] [--name NAME]"
   local proj="$1"; shift
+  outside_kit "$proj"
   local visibility="--private" github=1 name="" a
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -556,7 +713,7 @@ MD
 
   [ "$github" = 1 ] || { say "done (local only). Push later with: $0 repo $proj"; return 0; }
 
-  need gh "install the GitHub CLI (https://cli.github.com) and run: gh auth login"
+  ensure_tools gh || die "the GitHub CLI is needed to create the repo — run: $0 setup"
   gh auth status >/dev/null 2>&1 || die "GitHub CLI isn't signed in — run: gh auth login"
   local branch slug
   branch="$(git -C "$proj" branch --show-current)"
@@ -576,6 +733,7 @@ MD
 cmd_new() {
   [ $# -ge 1 ] || die "usage: $0 new <path> [design] [code] [--graph] [--no-memory] [--public] [--no-github] [--name NAME]"
   local proj="$1"; shift
+  outside_kit "$proj"
   local p_args=() r_args=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -586,6 +744,10 @@ cmd_new() {
     esac
     shift
   done
+  on_path_local_bin
+  local needs=(git python3 claude gitleaks uv)
+  [[ " ${r_args[*]+"${r_args[*]}"} " == *" --no-github "* ]] || needs+=(gh)
+  ensure_tools "${needs[@]}" || die "some tools are missing — run: $0 setup"
   mkdir -p "$proj"
   cmd_repo "$proj" --no-github           # git + gates first, so the project step commits into a gated repo
   cmd_project "$proj" "${p_args[@]+"${p_args[@]}"}"
@@ -631,7 +793,7 @@ cmd_register() {
   check_prereqs
   for row in "${UPSTREAM_MARKETPLACES[@]}"; do
     name="${row%%=*}"; repo="${row#*=}"
-    if claude plugin marketplace list 2>/dev/null | grep -q "$name"; then
+    if grep -q "$name" <<<"$(claude plugin marketplace list 2>/dev/null)"; then
       say "marketplace $name already added"
     else
       say "adding marketplace $name ($repo)"
@@ -640,7 +802,7 @@ cmd_register() {
     fi
   done
   [ -d "$src" ] && src="$(cd "$src" && pwd)"
-  if claude plugin marketplace list 2>/dev/null | grep -q "$KIT_NAME"; then
+  if grep -q "$KIT_NAME" <<<"$(claude plugin marketplace list 2>/dev/null)"; then
     say "marketplace $KIT_NAME already added (update with: claude plugin marketplace update $KIT_NAME)"
   else
     say "adding your kit marketplace from $src"
@@ -651,14 +813,10 @@ cmd_register() {
 
 # ---------------------------------------------------------------- basic memory
 ensure_uv() {
+  on_path_local_bin
   command -v uvx >/dev/null 2>&1 && return 0
-  if command -v brew >/dev/null 2>&1; then
-    say "installing uv with Homebrew (Basic Memory runs through it)"
-    brew install uv && return 0
-  fi
-  warn "uv is not installed, so Basic Memory can't run yet."
-  warn "install it: curl -LsSf https://astral.sh/uv/install.sh | sh   (or see https://docs.astral.sh/uv/)"
-  warn "then re-run: $0 project <path> ... to finish the Basic Memory setup"
+  ensure_tools uv && command -v uvx >/dev/null 2>&1 && return 0
+  warn "uv is not installed, so Basic Memory can't run yet (run: $0 setup, then re-run this command)"
   return 1
 }
 
@@ -700,6 +858,7 @@ PY
 cmd_project() {
   [ $# -ge 1 ] || die "usage: $0 project <path> [design] [code] [--graph] [--no-memory]"
   local proj="$1"; shift
+  outside_kit "$proj"
   local packs=("kit-core") graph=0 memory=1 a
   for a in "$@"; do
     case "$a" in
@@ -712,7 +871,7 @@ cmd_project() {
   done
   check_prereqs
   mkdir -p "$proj/.claude"; proj="$(cd "$proj" && pwd)"
-  claude plugin marketplace list 2>/dev/null | grep -q "$KIT_NAME" || die "kit marketplace not registered — run: $0 register"
+  grep -q "$KIT_NAME" <<<"$(claude plugin marketplace list 2>/dev/null)" || die "kit marketplace not registered — run: $0 register"
 
   # 1. committed settings so anyone who clones the project knows where the plugins come from
   local markets="" row
@@ -851,6 +1010,7 @@ main() {
     init) cmd_init "$@" ;;
     sync) cmd_sync "$@" ;;
     register) cmd_register "$@" ;;
+    setup) cmd_setup ;;
     project) cmd_project "$@" ;;
     repo) cmd_repo "$@" ;;
     new) cmd_new "$@" ;;
