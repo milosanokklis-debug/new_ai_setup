@@ -1193,6 +1193,9 @@ PY
   if [[ " ${packs[*]} " == *" kit-design "* ]]; then
     say "fetching web-design-guidelines into $proj/.claude/skills"
     vendor_one vercel-labs/agent-skills skills/web-design-guidelines "$proj/.claude/skills/web-design-guidelines" >/dev/null
+    # fetched per machine and never committed: upstream ships it without a licence file
+    grep -qx '.claude/skills/web-design-guidelines/' "$proj/.gitignore" 2>/dev/null || \
+      printf '\n# agent-kit: fetched by agent-kit.sh project; upstream has no licence, so not committed\n.claude/skills/web-design-guidelines/\n' >> "$proj/.gitignore"
   fi
 
   # 4. AGENTS.md holds the rules every agent shares; CLAUDE.md imports it (other tools can read it later)
