@@ -1,9 +1,9 @@
 {
   "name": "kit-code",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "kit-code for agent-kit",
   "license": "MIT",
   "author": {
-    "name": "Zeepo"
+    "name": "Computer Agent"
   }
 }

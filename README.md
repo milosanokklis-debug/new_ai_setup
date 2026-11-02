@@ -3,7 +3,7 @@
 My personal Claude Code setup. One script, `agent-kit.sh`, turns any folder into a project that:
 
 - runs entirely on my **Claude Pro** login (no API key, no other AI accounts)
-- delegates work to small, cheap **subagents** instead of doing everything in one big session
+- runs every session as an **orchestrator** (Opus) that plans and hands the work to cheaper **subagents** (Sonnet/Haiku). It can't edit files itself, so it has to delegate
 - **remembers** decisions between sessions with Basic Memory
 - can't push code that leaks a secret, fails its tests, or fails an **independent review**
 
@@ -18,9 +18,9 @@ flowchart TB
     me([Me]) --> main
 
     subgraph CC["Claude Code · Pro login"]
-        main["Main session<br/>plans and delegates<br/>(Opus if my plan has it, else Sonnet)"]
+        main["Main session = orchestrator agent<br/>Opus · plans and delegates<br/>can't edit files"]
 
-        subgraph design["kit-design · UI projects only"]
+        subgraph design["kit-design"]
             designer["designer<br/>Sonnet · builds UI"]
             auditor["design-auditor<br/>Sonnet · read-only"]
         end
@@ -31,10 +31,12 @@ flowchart TB
             simple["simplicity-reviewer<br/>Haiku · read-only"]
         end
 
-        main --> designer & auditor & coder & reviewer & simple
+        explore["Explore<br/>Haiku · read-only search"]
+        main --> designer & auditor & coder & reviewer & simple & explore
     end
 
-    core["kit-core skills<br/>planning, TDD, handoff<br/>find-skills (manual only)"] -.-> main
+    core["kit-core<br/>orchestrator guard hook<br/>find-skills (manual only)"] -.-> main
+    zsl["my zsl plugin<br/>grill-me, to-prd, handoff, tdd…"] -.-> main
     bm[("Basic Memory<br/>~/basic-memory-projects/&lt;project&gt;")] <--> main
     main --> gate{{"Push gate<br/>gitleaks → verify → fresh reviewer"}}
     gate --> gh[("GitHub<br/>CI must be green to merge")]
@@ -42,10 +44,10 @@ flowchart TB
 
 | Piece | What it is | Where it lives |
 |---|---|---|
-| **Main session** | The Claude Code session I talk to. It plans and hands work to subagents. | my terminal |
+| **Main session** | The Claude Code session I talk to. It runs as the `orchestrator` agent: it plans and hands work to subagents, and has no tools to edit files. | `.claude/agents/orchestrator.md` in each project |
 | **Subagents** | Specialists with their own instructions, tools and model. Each starts with a clean context, so they're cheap. | `plugins/kit-*/agents/*.md` |
 | **Skills** | Reusable know-how (how to do TDD, how to use shadcn…). Only the one-line description loads until a skill is used. | the plugins and their dependencies |
-| **Packs** | `kit-core` (always), `kit-design` (frontend projects), `kit-code` (any code). | installed per project |
+| **Packs** | `kit-core`, `kit-design` and `kit-code`. All three by default; `--no-design` / `--no-code` leave one out. | installed per project |
 | **AGENTS.md / CLAUDE.md** | The project's rules. `CLAUDE.md` imports `AGENTS.md` and adds a short note on which agent to use for what. | in each project |
 | **Basic Memory** | Long-term memory: plain Markdown notes Claude reads and writes through an MCP server. | `~/basic-memory-projects/<project>` |
 | **Push gate** | Git hooks plus GitHub Actions that block bad pushes and merges. | `.githooks/`, `scripts/`, `.github/` |
@@ -116,18 +118,18 @@ Having lots of projects doesn't cost context. Claude Code reads files only when 
 ## Starting a new project
 
 ```bash
-./agent-kit.sh new ~/code/my-app design code          # private GitHub repo
-./agent-kit.sh new ~/code/my-app code --public        # public (needed for branch protection on a free plan)
-./agent-kit.sh new ~/code/my-app code --no-github     # local only, push later with: ./agent-kit.sh repo ~/code/my-app
+./agent-kit.sh new ~/code/my-app                      # private GitHub repo, all packs
+./agent-kit.sh new ~/code/my-app --public             # public (needed for branch protection on a free plan)
+./agent-kit.sh new ~/code/my-app --no-github          # local only, push later with: ./agent-kit.sh repo ~/code/my-app
 ```
 
-Leave out `design` for projects with no UI. Leave out `code` for projects with no code.
+Every pack goes in by default. I learned this the hard way: my first website project only got `kit-core`, so the designer agents didn't exist and nothing touched the UI properly. Add `--no-design` only for projects with truly no UI, and `--no-code` only for projects with no code (that also turns off the orchestrator, since there's no coder to delegate to).
 
 ```mermaid
 flowchart LR
     A["git init"] --> B["add gates<br/>hooks · verify.sh<br/>reviewer · CI"]
-    B --> C["install packs<br/>core + design/code"]
-    C --> D["write AGENTS.md<br/>+ CLAUDE.md"]
+    B --> C["install packs<br/>core + design + code"]
+    C --> D["write AGENTS.md, CLAUDE.md<br/>+ orchestrator agent"]
     D --> E["Basic Memory<br/>notes folder · MCP<br/>· plugin hooks"]
     E --> F["commit"]
     F --> G["create GitHub repo<br/>+ push"]
@@ -142,7 +144,9 @@ cd ~/code/my-app && claude
 
 The first time, Claude Code asks me to approve the `basic-memory` server. I say yes. From then on it starts by itself every session.
 
-To add the kit to a project that already exists, use `./agent-kit.sh project <path> design code` (no repo changes), or `./agent-kit.sh repo <path>` to add only the gates.
+To add the kit to a project that already exists, use `./agent-kit.sh project <path>` (no repo changes), or `./agent-kit.sh repo <path>` to add only the gates.
+
+**Updating an older project:** run `./agent-kit.sh project <path>` again. It updates the packs, writes the orchestrator, turns off Matt Pocock's skills if my zsl plugin is there, and rewrites the kit's block in `CLAUDE.md` (only the part between the `agent-kit` markers; my own notes stay).
 
 ---
 
@@ -151,15 +155,17 @@ To add the kit to a project that already exists, use `./agent-kit.sh project <pa
 ```mermaid
 sequenceDiagram
     actor Me
-    participant M as Main session
+    participant M as Orchestrator (Opus)
     participant BM as Basic Memory
     participant A as Subagents
     participant G as Push gate
 
     Note over M,BM: Session starts: Basic Memory briefs Claude
-    Me->>M: /grill-me "add login"
+    Me->>M: /zsl:grill-me "add login"
     M->>BM: earlier decisions about auth?
-    M->>A: coder / designer build it
+    M->>A: coder + designer build it (in parallel)
+    A-->>M: summary + how it was verified
+    M->>A: design-auditor checks the UI
     A-->>M: summary + how it was verified
     M->>A: reviewer + simplicity-reviewer (in parallel)
     A-->>M: findings
@@ -168,9 +174,10 @@ sequenceDiagram
     G-->>Me: green light, or what to fix
 ```
 
-- **Start a feature** with `/grill-me` (small) or `/wayfinder` (big). Claude asks questions until the plan is clear.
-- **Let the main session delegate.** The `CLAUDE.md` note tells it which agent handles what.
-- **End long sessions** with `/handoff` so the next session picks up cleanly.
+- **Start a feature** with `/zsl:grill-me` (small) or `/zsl:to-prd` (big). Claude asks questions until the plan is clear.
+- **The main session delegates, always.** It runs as the `orchestrator` agent (set by `"agent": "orchestrator"` in `.claude/settings.json`). It has no Edit/Write tools, can only spawn the kit's agents (never the built-in general-purpose one, which would run on Opus), and a hook in `kit-core` blocks Bash commands that write files (`sed -i`, `>` redirects, `tee`, Python/Node scripts that write). Anything users see goes to the designer, and the design-auditor checks it afterwards.
+- **Small fix, don't want the ceremony?** `claude --agent solo` gives a normal hands-on session with every tool. The guard only applies to the orchestrator.
+- **Between tasks:** `/zsl:handoff`, then `/clear`. My usage panel said most of my usage came from not clearing between tasks.
 - **Never let Claude install skills on its own.** `find-skills` is manual-only. Use it to shop, then add the good ones to the kit.
 
 ---
@@ -235,7 +242,7 @@ All of this happens in `new` and `project`. Skip it with `--no-memory`.
 |---|---|
 | `/basic-memory:bm-remember <text>` | Save a quick fact or reminder |
 | `/basic-memory:bm-decide` | Record a decision properly: why, alternatives, consequences |
-| `/basic-memory:bm-checkpoint` | Save where I am before stopping (pairs well with `/handoff`) |
+| `/basic-memory:bm-checkpoint` | Save where I am before stopping (pairs well with `/zsl:handoff`) |
 | `/basic-memory:bm-orient` | Have Claude read the notes and summarize where things stand |
 | `/basic-memory:bm-status` | Check it's connected and which notes it's using |
 | `/basic-memory:bm-setup` | Optional: a short interview that tunes folders and note templates |
@@ -302,13 +309,13 @@ My Pro usage is shared between the Claude app and Claude Code, and every subagen
 |---|---|
 | Install only the packs a project needs | Every installed skill's description loads every turn. |
 | Run `./agent-kit.sh doctor` now and then | Shows skills and tokens per plugin, plus duplicate skill names. The kit is about 45 skills / ~4k tokens a turn, plus the Basic Memory plugin. |
-| Let subagents do the work | They run on Sonnet or Haiku with a clean context, instead of everything piling into one long Opus session. |
-| `/handoff`, then start fresh | Long sessions get expensive and worse. |
+| Let subagents do the work | The orchestrator forces this: Opus only plans and reviews, Sonnet/Haiku write the code. |
+| `/zsl:handoff`, then `/clear` | Long sessions get expensive and worse. |
 | `REVIEW_MODEL=haiku` | Cheaper push reviews. |
 
 Before adding any new skill, run `./agent-kit.sh doctor --scan` (AgentShield checks agent config for risky permissions and prompt injection).
 
-The packs pull skills from a few third-party GitHub marketplaces (Addy Osmani, Matt Pocock, Hallmark, Design and Refine, Basic Memory). My own skills are vendored at pinned commits (`VENDORED.md`); the upstream plugins update when their authors push. That's a trust decision. Run `doctor --scan` after updates.
+The packs pull skills from a few third-party GitHub marketplaces (Addy Osmani, Hallmark, Design and Refine, Basic Memory, and Matt Pocock only when my zsl plugin isn't there). My own skills are vendored at pinned commits (`VENDORED.md`); the upstream plugins update when their authors push. That's a trust decision. Run `doctor --scan` after updates.
 
 ---
 
@@ -324,6 +331,8 @@ The packs pull skills from a few third-party GitHub marketplaces (Addy Osmani, M
 | Basic Memory tools or briefing missing | Approve the server when asked, then `/basic-memory:bm-status`. Re-run `./agent-kit.sh setup` if `basic-memory` isn't found |
 | "couldn't turn on branch protection" | Private repo on a free plan. Make it public or skip it. The hooks still work. |
 | A plugin change isn't showing up | `claude plugin marketplace update agent-kit`, then restart Claude Code |
+| The main session does the work itself, or never uses the designer | Re-run `./agent-kit.sh project <path>`: older projects have no orchestrator and may be missing `kit-design`. Check `"agent": "orchestrator"` in `.claude/settings.json` |
+| "The orchestrator doesn't change files itself" | Working as intended. Let it delegate, or restart with `claude --agent solo` |
 
 ---
 
@@ -332,12 +341,12 @@ The packs pull skills from a few third-party GitHub marketplaces (Addy Osmani, M
 | Command | Does |
 |---|---|
 | `./agent-kit.sh setup` | Install every tool the kit needs (once per machine; safe to re-run) |
-| `./agent-kit.sh new <path> [design] [code]` | Everything: repo, gates, packs, Basic Memory, GitHub. Installs missing tools first |
-| `./agent-kit.sh project <path> [design] [code]` | Packs, AGENTS.md/CLAUDE.md and Basic Memory only |
+| `./agent-kit.sh new <path> [--no-design] [--no-code]` | Everything: repo, gates, packs, Basic Memory, GitHub. Installs missing tools first |
+| `./agent-kit.sh project <path> [--no-design] [--no-code]` | Packs, orchestrator, AGENTS.md/CLAUDE.md and Basic Memory only. Re-run it to update an older project |
 | `./agent-kit.sh repo <path>` | Gates and GitHub only |
 | `./agent-kit.sh doctor [--scan]` | What's installed and what it costs per turn |
 | `./agent-kit.sh sync .` | Re-pull vendored skills from upstream (see `VENDORED.md`) |
 | `./agent-kit.sh register .` | Add the marketplaces to Claude Code (once per machine) |
 
 Flags for `new`/`project`: `--no-memory` (skip Basic Memory), `--graph` (code graph for big repos). Flags for `new`/`repo`: `--public`, `--no-github`, `--name NAME`.
-Environment variables: `KIT_REPO`, `REVIEW_MODEL`, `BM_HOME`, `METHOD=agent-skills|superpowers`.
+Environment variables: `KIT_REPO`, `REVIEW_MODEL`, `BM_HOME`, `METHOD=agent-skills|superpowers`, `PLANNING=zsl|mattpocock` (default: zsl when that plugin is loaded).
