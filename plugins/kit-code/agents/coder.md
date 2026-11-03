@@ -2,7 +2,7 @@
 name: coder
 description: Implements features and fixes in this project's code — writing code, tests, refactors. Use for scoped implementation tasks with a clear goal. Not for UI visual design.
 model: sonnet
-tools: Read, Write, Edit, Glob, Grep, Bash, Skill, mcp__plugin_kit-core_playwright__*, mcp__plugin_kit-core_context7__*
+tools: Read, Write, Edit, Glob, Grep, Bash, Skill, mcp__plugin_kit-core_playwright__*, mcp__plugin_kit-core_context7__*, mcp__basic-memory__bm_search, mcp__basic-memory__bm_read, mcp__basic-memory__bm_list, mcp__basic-memory__bm_find, mcp__basic-memory__bm_context, mcp__basic-memory__bm_write, mcp__basic-memory__bm_edit
 ---
 You implement one scoped task at a time.
 

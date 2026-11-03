@@ -2,7 +2,7 @@
 name: design-auditor
 description: Read-only UI audit — accessibility, interaction states, Web Interface Guidelines, AI-slop patterns. Use after UI changes and before merging frontend work. Never edits files.
 model: haiku
-tools: Read, Glob, Grep, WebFetch, Skill, mcp__plugin_kit-core_playwright__*, mcp__plugin_kit-core_chrome-devtools__*
+tools: Read, Glob, Grep, WebFetch, Skill, mcp__plugin_kit-core_playwright__*, mcp__plugin_kit-core_chrome-devtools__*, mcp__basic-memory__bm_search, mcp__basic-memory__bm_read, mcp__basic-memory__bm_list, mcp__basic-memory__bm_find, mcp__basic-memory__bm_context
 skills:
   - web-design-guidelines
 ---

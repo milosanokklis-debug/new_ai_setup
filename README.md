@@ -11,6 +11,61 @@ This repo is also a Claude Code plugin marketplace. The `plugins/` folder holds 
 
 ---
 
+## What's new in 0.7
+
+- **`agent-kit.sh ensure <path> [design] [code] [--json]`**: an unattended, idempotent installer/updater for CI, containers and other agents. See [Unattended installs](#unattended-installs-ensure).
+- Kit agents get **Basic Memory tools by full name** (`mcp__basic-memory__bm_*`) on top of their explicit `tools:` lists: coder and designer can read and write, every other agent is read-only. The lists live in one place at the top of `agent-kit.sh` (`BM_READ_TOOLS`, `BM_WRITE_TOOLS`, `BM_WRITER_AGENTS`).
+- `doctor` shows whether `basic-memory` is registered and connected (read-only).
+- The CLAUDE.md block (`project` and `ensure`) now starts with a Basic Memory rule: search first, and stop if the server is unavailable.
+- `web-design-guidelines` is pinned by its own `WDG_REF` (currently the same commit as `AGENT_SKILLS_SHA`).
+
+---
+
+## Unattended installs (`ensure`)
+
+```
+./agent-kit.sh ensure <path> [design] [code] [--json]
+```
+
+Makes one existing git repo match the packs you list, and does nothing if it already does. `kit-core` is always on; `design` and `code` are the complete set of extra packs, so a pack you leave out is uninstalled (`kit-design`/`kit-code` only, never `kit-core`; its dependency plugins such as hallmark stay, because `--prune` also removed `kit-core`'s own dependency in testing). `<path>` must be the root of an existing git working tree (it has a `.git`); `ensure` never creates it and never runs git against it.
+
+**It writes only:**
+
+- `<path>/.claude/settings.json`: only the keys `extraKnownMarketplaces` and `enabledPlugins`. Everything else is untouched; the file is rewritten (2-space JSON, key order kept, trailing newline) only when one of those keys needs to change.
+- `<path>/.claude/skills/web-design-guidelines/`: present only when `design` is wanted. Fetched at exactly `WDG_REF` (a commit SHA in `agent-kit.sh`, recorded in the manifest and in [VENDORED.md](VENDORED.md)); no network when the manifest already has that ref and the folder exists. A different `WDG_REF` replaces the folder. The folder holds a `.gitignore` containing `*`, because upstream ships no licence file, so it never shows up in `git status`.
+- `<path>/.claude/agent-kit.json`: manifest `{kit, kit_repo, kit_version, packs, web_design_guidelines_ref}`, no timestamps.
+- `<path>/CLAUDE.md`: only between `<!-- agent-kit:start -->` and `<!-- agent-kit:end -->`, rewritten each run (appended if the markers are missing, file created if missing, written only if it differs). The first line is the Basic Memory rule, then the notes convention (`repos/<repo-name>/`, `shared/`), then the routing note for the packs. The orchestrator and ui-guide lines appear only if those agent files exist (`project` writes them; `ensure` does not).
+- `~/.claude`, through `claude plugin ...` commands (project scope, all with `-y`).
+
+It never touches `.mcp.json`, `mcpServers` or `claude mcp` (except reading `claude mcp list` to report `memory`).
+
+**Flow:** register the marketplaces the wanted packs depend on (read from the kit's `marketplace.json`; exact-name match against `claude plugin marketplace list --json`, so `agent-kit-old` never counts as `agent-kit`) and the kit's own, update them, then `claude plugin update` each wanted pack already installed at project scope in this repo or `install` it, and `uninstall` an unwanted `kit-design`/`kit-code`. The kit marketplace is named by `.claude-plugin/marketplace.json` (not `KIT_NAME`). If it is registered from another folder, `ensure` points it at the kit it is running from. Only the marketplaces a pack needs are cloned, so a code-only repo does not clone hallmark. `KIT_REPO` comes from the environment, else from the kit's own `origin` remote (`git@github.com:o/r.git` and `https://github.com/o/r.git` both give `o/r`); both `KIT_REPO` and `KIT_NAME` may be unset. `METHOD` has no effect on `ensure`: the methodology dependency is whatever the kit's plugins were generated with.
+
+**Exit codes**
+
+| Code | Meaning |
+|---|---|
+| 0 | Success, whether anything changed or not |
+| 2 | Unknown argument, or `<path>` missing / not a directory / not a git working tree / inside the kit. Nothing is written |
+| 3 | `claude`, `git` or `python3` is missing |
+| 4 | Marketplace register or update failed |
+| 5 | `claude plugin install`/`update`/`uninstall` failed |
+| 6 | A project file could not be written (including a fetch failure for `web-design-guidelines`, and a `settings.json` that is not valid JSON) |
+
+**`--json`:** all progress goes to stderr and the last stdout line is exactly one JSON object:
+
+```
+{"ok":true,"changed":false,"kit_version":"0.7.0","installed":[],"updated":[],"removed":[],"files":[],"memory":"connected"}
+```
+
+`changed` is true when a hash of the files above differs before and after the run (so it stays honest if a `claude` command rewrites `settings.json`). `files` lists the changed paths relative to the repo. `installed`, `updated` (a pack whose version or commit really moved) and `removed` are pack names. `memory` is `connected` or `missing` (not registered, or not connected); it is a warning only and `ensure` still exits 0. On failure under `--json`, the single stdout line is `{"ok":false,"code":N,"error":"..."}`.
+
+**Unattended notes:** no TTY needed; stdin is never read (children get `</dev/null`) and every `claude plugin` command gets `-y`. Scratch files go to `${TMPDIR:-/tmp}`. Colour is used only when stdout is a terminal and `NO_COLOR` is unset. Needs network and a working `claude plugin` for the marketplaces; a repeat run still contacts the marketplaces to update them, but fetches nothing else. This Claude Code (2.1.317) has `--json` on `claude plugin list` and `claude plugin marketplace list`; on an older one without it, `ensure` fails with exit 4/5 rather than guessing from the table.
+
+`project` is not an alias for `ensure`: it also writes `AGENTS.md`, `.mcp.json`, the Basic Memory project, the orchestrator and ui-guide agents, `.gitignore` entries and the planning plugins, none of which `ensure` may touch. It shares the CLAUDE.md block code with `ensure`.
+
+---
+
 ## What's new in 0.6
 
 - **Vercel agent skills** (`vercel-labs/agent-skills`, pinned). React skills are installed for projects that depend on `react` or `next`; `writing-guidelines` is fetched into every project and used by the reviewer. Left out: vercel-optimize, deploy-to-vercel, vercel-cli-with-tokens. Pin details are in [VENDORED.md](VENDORED.md) and [SECURITY-REVIEW.md](SECURITY-REVIEW.md).
@@ -396,6 +451,7 @@ The packs pull skills from a few third-party GitHub marketplaces (Addy Osmani, H
 | `./agent-kit.sh setup` | Install every tool the kit needs (safe to re-run) |
 | `./agent-kit.sh new <path> [--no-design\|--no-ui] [--no-code]` | Everything: repo, gates, packs, Basic Memory, GitHub. Installs missing tools first |
 | `./agent-kit.sh project <path> [--no-design\|--no-ui] [--no-code]` | Packs, orchestrator, AGENTS.md/CLAUDE.md and Basic Memory only. Re-run it to update an older project. `--no-ui` is an alias for `--no-design` |
+| `./agent-kit.sh ensure <path> [design] [code] [--json]` | Unattended, idempotent install/update of the packs into one existing git repo; see [Unattended installs](#unattended-installs-ensure) |
 | `./agent-kit.sh repo <path>` | Gates and GitHub only |
 | `./agent-kit.sh doctor [--scan]` | What's installed, which MCP servers the kit ships, and what the skills cost per turn |
 | `./agent-kit.sh usage [--since YYYY-MM-DD]` | Tokens and estimated $ per model family and agent type, from `~/.claude/projects` (list prices; an estimate, not your bill) |
@@ -406,4 +462,4 @@ The packs pull skills from a few third-party GitHub marketplaces (Addy Osmani, H
 | `./agent-kit.sh register .` | Add the marketplaces to Claude Code (once per machine), and install the Haiku `Explore` agent in `~/.claude/agents/` (skipped if you have your own, i.e. no agent-kit marker) |
 
 Flags for `new`/`project`: `--no-memory` (skip Basic Memory), `--graph` (code graph for big repos). Flags for `new`/`repo`: `--public`, `--no-github`, `--name NAME`.
-Environment variables: `KIT_REPO`, `REVIEW_MODEL`, `BM_HOME`, `METHOD=agent-skills|superpowers`, `PLANNING=zsl|mattpocock` (default: zsl when that plugin is loaded).
+Environment variables: `KIT_REPO`, `REVIEW_MODEL`, `BM_HOME`, `METHOD=agent-skills|superpowers` (no effect on `ensure`), `NO_COLOR`, `PLANNING=zsl|mattpocock` (default: zsl when that plugin is loaded).
