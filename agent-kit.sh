@@ -6,6 +6,12 @@
 #   ./agent-kit.sh sync     [kit-dir]                 re-pull vendored skills from upstream
 #   ./agent-kit.sh register [kit-dir]                 add upstream + kit marketplaces to your user settings, and a
 #                                                     Haiku Explore agent to ~/.claude/agents (never over your own file)
+#   ./agent-kit.sh ensure   <path> [design] [code] [--json]
+#                                                     unattended, idempotent install/update of the kit into one
+#                                                     existing git repo (kit-core always; design/code = the extra
+#                                                     packs, others removed). See "Unattended installs" in README.md.
+#                                                     Exit: 0 ok, 2 usage/bad path, 3 tool missing, 4 marketplace,
+#                                                     5 plugin command, 6 project file write
 #   ./agent-kit.sh project  <path> [--no-design|--no-ui] [--no-code] [--graph] [--no-memory]
 #                                                     wire a project to the kit (all packs unless you opt out;
 #                                                     --no-ui leaves out the UI pack: kit-design, hallmark,
@@ -39,7 +45,7 @@ set -euo pipefail
 
 KIT_NAME="${KIT_NAME:-agent-kit}"
 METHOD="${METHOD:-agent-skills}"
-KIT_VERSION="0.6.0"
+KIT_VERSION="0.7.0"
 GITLEAKS_VERSION="${GITLEAKS_VERSION:-8.30.1}"
 AGENT_SKILLS_SHA="1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62"   # vercel-labs/agent-skills commit for the fetched guideline skills
 SEMGREP_VERSION="1.183.0"   # pinned for setup, vet and the reviewer's MCP server; update on purpose
@@ -65,15 +71,30 @@ VENDORED=(
   "kit-code|DietrichGebert/ponytail|skills/ponytail-review"
 )
 
+# web-design-guidelines (fetched by `ensure` and `project` from vercel-labs/agent-skills, skills/web-design-guidelines).
+# It exists at AGENT_SKILLS_SHA (checked 2026-11-03), so it shares that pin; give it its own SHA here to move it alone.
+WDG_REF="$AGENT_SKILLS_SHA"
+
+# Basic Memory tools granted to kit agents (R11), appended to each agent's explicit `tools:` line by write_kit.
+# ONE place to swap when the server's tool names change (e.g. the ccdash Phase-0 names). Writers: coder, designer.
+# Everyone else gets read tools only. Full names: the server is called `basic-memory`.
+BM_READ_TOOLS="mcp__basic-memory__bm_search, mcp__basic-memory__bm_read, mcp__basic-memory__bm_list, mcp__basic-memory__bm_find, mcp__basic-memory__bm_context"
+BM_WRITE_TOOLS="mcp__basic-memory__bm_write, mcp__basic-memory__bm_edit"   # added on top of BM_READ_TOOLS
+BM_WRITER_AGENTS="coder designer"
+
 case "$METHOD" in
   agent-skills) METHOD_DEP="agent-skills@addy-agent-skills" ;;
   superpowers)  METHOD_DEP="superpowers@superpowers-marketplace" ;;
   *) echo "METHOD must be agent-skills or superpowers" >&2; exit 1 ;;
 esac
 
-say()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
-die()  { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
+# colour only on a terminal and when NO_COLOR is unset (https://no-color.org)
+paint() { # fd code text
+  if [ -t "$1" ] && [ -z "${NO_COLOR:-}" ]; then printf '\033[%sm%s\033[0m' "$2" "$3"; else printf '%s' "$3"; fi
+}
+say()  { printf '%s %s\n' "$(paint 1 '1;34' '==>')" "$*"; }
+warn() { printf '%s %s\n' "$(paint 2 '1;33' '!!')" "$*" >&2; }
+die()  { printf '%s %s\n' "$(paint 2 '1;31' 'xx')" "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing '$1' — $2"; }
 
 KIT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -357,6 +378,30 @@ vendor_all() {
 # ---------------------------------------------------------------- kit files
 write_json() { python3 -c 'import json,sys; json.dump(json.loads(sys.argv[2]), open(sys.argv[1],"w"), indent=2); open(sys.argv[1],"a").write("\n")' "$1" "$2"; }
 
+# Append the Basic Memory tools (BM_* variables at the top) to every kit agent's explicit tools: line.
+# Never drops a tool; running it twice changes nothing.
+bm_grant_tools() { # kit-dir
+  local f name list
+  for f in "$1"/plugins/*/agents/*.md; do
+    name="$(basename "$f" .md)"; list="$BM_READ_TOOLS"
+    case " $BM_WRITER_AGENTS " in *" $name "*) list="$list, $BM_WRITE_TOOLS" ;; esac
+    python3 -I - "$f" "$list" <<'PY'
+import sys
+path, add = sys.argv[1], sys.argv[2].split(", ")
+lines = open(path).read().split("\n")
+end = lines.index("---", 1)
+for i in range(1, end):
+    if lines[i].startswith("tools:"):
+        have = [t.strip() for t in lines[i][6:].split(",")]
+        lines[i] = "tools: " + ", ".join(have + [t for t in add if t not in have])
+        break
+else:
+    sys.exit(f"{path}: no tools: line")
+open(path, "w").write("\n".join(lines))
+PY
+  done
+}
+
 write_kit() {
   local kit="$1"
   mkdir -p "$kit/.claude-plugin" "$kit/plugins"/{kit-core,kit-design,kit-code}/{.claude-plugin,agents,skills} \
@@ -611,6 +656,8 @@ skills:
 ---
 Apply the ponytail-review skill to `git diff`. Return only its delete/simplify list. Do not edit files. Correctness and security are the reviewer agent's job, not yours.
 MD
+
+  bm_grant_tools "$kit"
 
   # ---- kit-core: orchestrator guard. Only the main thread running as "orchestrator" is affected:
   # hooks carry agent_id inside subagents, and agent_type is "solo" in a hands-on session.
@@ -1511,6 +1558,59 @@ sys.exit(0 if os.path.exists(p) and json.load(open(p)).get("enabledPlugins", {})
 PY
 }
 
+# The CLAUDE.md block between the agent-kit markers, shared by `project` and `ensure`. Printed without a final newline.
+# The first line is the Basic Memory rule. Lines that name a file only `project` writes (orchestrator, ui-guide)
+# appear only when that file exists / is being written, so `ensure` never points at something missing.
+kit_block() { # project-dir design code memory orchestrator ui-guide plan-new plan-big plan-handoff  (flags 0|1)
+  local proj="$1" design="$2" code="$3" memory="$4" orch="$5" uig="$6" plan_new="$7" plan_big="$8" plan_handoff="$9" repo
+  repo="$(basename "$proj")"
+  printf '<!-- agent-kit:start -->\n'
+  if [ "$memory" = 1 ]; then
+    printf '%s\n' 'Before anything else, search Basic Memory (the `basic-memory` server) for this repo and task. If `basic-memory` is unavailable, stop and say so instead of continuing.'
+    printf 'Notes for this repo live under `repos/%s/`; notes that span repos live under `shared/`.\n' "$repo"
+  fi
+  printf '## Working with the agent kit\n'
+  if [ "$code" = 1 ] && [ "$orch" = 1 ]; then
+    printf -- '- Sessions here run as the orchestrator agent (.claude/agents/orchestrator.md): it plans and delegates; the coder and designer agents change files. Hands-on instead: `claude --agent solo`.\n'
+  else
+    [ "$code" = 1 ] && printf -- '- Code work → kit-code:coder agent. Before merging → kit-code:reviewer agent.\n'
+    [ "$design" = 1 ] && \
+      printf -- '- UI work → kit-design:designer agent. After UI changes → kit-design:design-auditor agent.\n'
+  fi
+  printf -- '- New feature → %s; big feature → %s. Between tasks → %s, then /clear.\n' "$plan_new" "$plan_big" "$plan_handoff"
+  [ "$design" = 1 ] && [ "$uig" = 1 ] && \
+    printf -- '- Questions about the UI skills (which one, what it says, how it fits this code) → `claude --agent ui-guide` (read-only).\n'
+  printf -- '- Never install skills on your own; vet them first (`agent-kit.sh vet <owner/repo>`), suggest them and wait (find-skills is manual-only).\n'
+  printf '<!-- agent-kit:end -->'
+}
+
+# Replace the marker block in a file (append it if there is none, create the file if missing); never touch
+# text outside the markers; write only if the result differs. Exits 1 on unbalanced markers or a write error.
+write_claude_block() { # file block-text
+  python3 -I - "$1" "$2" <<'PY'
+import os, re, sys
+path, block = sys.argv[1], sys.argv[2]
+START, END = "<!-- agent-kit:start -->", "<!-- agent-kit:end -->"
+try:
+    text = open(path, encoding="utf-8", newline="").read() if os.path.exists(path) else ""
+    m = re.search(re.escape(START) + r".*?" + re.escape(END), text, re.S)
+    if m:
+        new = text[:m.start()] + block + text[m.end():]
+    elif START in text or END in text:
+        sys.exit(f"{path}: unbalanced agent-kit markers; fix by hand")
+    elif text.strip():
+        new = text.rstrip("\n") + "\n\n" + block + "\n"
+    else:
+        new = block + "\n"
+    if new != text:
+        tmp = path + ".kit-tmp"
+        open(tmp, "w", encoding="utf-8", newline="").write(new)
+        os.replace(tmp, path)
+except OSError as e:
+    sys.exit(f"{path}: {e}")
+PY
+}
+
 # Project agents for the main session. They live in the project (not a plugin) because the orchestrator's
 # list of agents it may spawn depends on which packs this project has. Re-running `project` rewrites them.
 write_session_agents() { # project-dir design code memory plan-new plan-big plan-handoff
@@ -1739,11 +1839,12 @@ PY
   # 3. web-design-guidelines (design packs only) and writing-guidelines (every project) have no licence file
   #    upstream, so they are fetched into the project rather than vendored. Pinned to $AGENT_SKILLS_SHA; both
   #    still WebFetch their rules from upstream main at run time. A failed fetch only warns.
-  local want=() item f pkgjson fetched=(writing-guidelines)
+  local want=() item f pkgjson ref fetched=(writing-guidelines)
   [[ " ${packs[*]} " == *" kit-design "* ]] && fetched+=(web-design-guidelines)
   for item in "${fetched[@]}"; do
     say "fetching $item into $proj/.claude/skills"
-    if ( vendor_one vercel-labs/agent-skills "skills/$item" "$proj/.claude/skills/$item" "$AGENT_SKILLS_SHA" >/dev/null ); then
+    ref="$AGENT_SKILLS_SHA"; [ "$item" = web-design-guidelines ] && ref="$WDG_REF"
+    if ( vendor_one vercel-labs/agent-skills "skills/$item" "$proj/.claude/skills/$item" "$ref" >/dev/null ); then
       # fetched per machine and never committed: upstream ships it without a licence file
       grep -qx ".claude/skills/$item/" "$proj/.gitignore" 2>/dev/null || {
         grep -qF '# agent-kit: fetched' "$proj/.gitignore" 2>/dev/null || \
@@ -1790,29 +1891,9 @@ PY
   write_session_agents "$proj" "$design" "$code" "$memory" "$plan_new" "$plan_big" "$plan_handoff"
 
   # 7. short routing note — CLAUDE.md is loaded every turn, so keep it tiny. Rewritten on every run.
-  {
-    printf '<!-- agent-kit:start -->\n## Working with the agent kit\n'
-    if [ "$code" = 1 ]; then
-      printf -- '- Sessions here run as the orchestrator agent (.claude/agents/orchestrator.md): it plans and delegates; the coder and designer agents change files. Hands-on instead: `claude --agent solo`.\n'
-    else
-      [ "$design" = 1 ] && \
-        printf -- '- UI work → kit-design:designer agent. After UI changes → kit-design:design-auditor agent.\n'
-    fi
-    printf -- '- New feature → %s; big feature → %s. Between tasks → %s, then /clear.\n' "$plan_new" "$plan_big" "$plan_handoff"
-    [ "$design" = 1 ] && \
-      printf -- '- Questions about the UI skills (which one, what it says, how it fits this code) → `claude --agent ui-guide` (read-only).\n'
-    printf -- '- Never install skills on your own; vet them first (`agent-kit.sh vet <owner/repo>`), suggest them and wait (find-skills is manual-only).\n'
-    printf '<!-- agent-kit:end -->\n'
-  } > "$proj/.kit-block"
-  python3 - "$proj/CLAUDE.md" "$proj/.kit-block" <<'PY2'
-import re, sys
-path, block = sys.argv[1], open(sys.argv[2]).read()
-text = open(path).read()
-pattern = re.compile(r"\n*<!-- agent-kit:start -->.*?<!-- agent-kit:end -->\n?", re.S)
-text = pattern.sub(lambda _: "\n\n" + block, text, count=1) if pattern.search(text) else text.rstrip("\n") + "\n\n" + block
-open(path, "w").write(text)
-PY2
-  rm -f "$proj/.kit-block"
+  local ui_guide=0; [ "$design" = 1 ] && ui_guide=1
+  write_claude_block "$proj/CLAUDE.md" "$(kit_block "$proj" "$design" "$code" "$memory" "$code" "$ui_guide" "$plan_new" "$plan_big" "$plan_handoff")" \
+    || die "could not write $proj/CLAUDE.md"
 
   # 8. optional codebase graph (only worth it on large repos)
   if [ "$graph" = 1 ]; then
@@ -1835,6 +1916,316 @@ PY2
 
   say "done. Commit .claude/, .mcp.json, AGENTS.md and CLAUDE.md. Then open Claude Code there and run /context."
   if [ "$code" = 1 ]; then say "sessions there start as the orchestrator; for a hands-on session run: claude --agent solo"; fi
+}
+
+# ---------------------------------------------------------------- ensure
+# `ensure <path> [design] [code] [--json]`: unattended, idempotent install/update of the kit into one git repo.
+# Exit codes: 0 ok (changed or not), 2 usage or bad path (nothing written), 3 claude/git/python3 missing,
+# 4 marketplace register/update failed, 5 claude plugin install/update/uninstall failed, 6 project file write failed.
+# It writes only: <path>/.claude/settings.json (keys extraKnownMarketplaces, enabledPlugins), .claude/skills/web-design-guidelines/,
+# .claude/agent-kit.json, and the marker block in CLAUDE.md; plus ~/.claude through `claude plugin`. No git commands
+# against the project, never .mcp.json or `claude mcp` beyond reading status. It never reads stdin.
+
+# Small Python helper, one subcommand per call. Reads JSON passed as arguments, never stdin (stdin carries the script).
+ensure_py() { python3 -I - "$@" <<'PY'
+import copy, hashlib, json, os, re, sys
+
+cmd, a = sys.argv[1], sys.argv[2:]
+CSV = lambda s: [x for x in s.split(",") if x]
+rp = os.path.realpath
+
+def mine(listing, proj, kit):  # {pack: entry} for the packs of this marketplace installed at project scope in proj
+    out = {}
+    for e in json.loads(listing):
+        name, _, mk = str(e.get("id", "")).partition("@")
+        if mk == kit and e.get("scope") == "project" and e.get("projectPath") and rp(e["projectPath"]) == rp(proj):
+            out[name] = e
+    return out
+
+def write_file(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".kit-tmp"
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+def dump(obj):
+    return json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
+
+if cmd == "mkname":      # kit-dir
+    print(json.load(open(os.path.join(a[0], ".claude-plugin", "marketplace.json")))["name"])
+elif cmd == "mkstate":   # marketplace-list-json name kit-dir  -> missing | ok | repoint
+    hit = [m for m in json.loads(a[0]) if m.get("name") == a[1]]   # exact name: agent-kit-old never matches agent-kit
+    if not hit:
+        print("missing")
+    elif a[2] and hit[0].get("source") == "directory" and rp(hit[0].get("path", "")) != rp(a[2]):
+        print("repoint")
+    else:
+        print("ok")
+elif cmd == "needed":     # kit-dir packs-csv -> other marketplaces the wanted packs depend on (name@marketplace)
+    plugins = {p["name"]: p for p in json.load(open(os.path.join(a[0], ".claude-plugin", "marketplace.json")))["plugins"]}
+    seen, todo, out = set(), CSV(a[1]), []
+    while todo:
+        p = todo.pop()
+        if p in seen or p not in plugins:
+            continue
+        seen.add(p)
+        for d in plugins[p].get("dependencies", []):
+            d = d if isinstance(d, str) else d.get("name", "")
+            name, _, mk = d.partition("@")
+            if mk and mk not in out:
+                out.append(mk)
+            elif not mk:
+                todo.append(name)
+    print("\n".join(out))
+elif cmd == "installed":  # list-json proj kit
+    print("\n".join(mine(a[0], a[1], a[2])))
+elif cmd == "updated":    # list-before list-after proj kit packs-csv -> packs whose version or commit moved
+    b, n = mine(a[0], a[2], a[3]), mine(a[1], a[2], a[3])
+    key = lambda e: (e.get("version"), e.get("gitCommitSha"))
+    print("\n".join(p for p in CSV(a[4]) if p in b and p in n and key(b[p]) != key(n[p])))
+elif cmd == "hasprefix":  # list-json prefix
+    sys.exit(0 if any(str(e.get("id", "")).startswith(a[1]) for e in json.loads(a[0])) else 1)
+elif cmd == "snapshot":   # proj -> {relpath: sha256} of the files ensure may write
+    proj, snap = a[0], {}
+    paths = [".claude/settings.json", ".claude/agent-kit.json", "CLAUDE.md"]
+    for root, _, files in os.walk(os.path.join(proj, ".claude", "skills", "web-design-guidelines")):
+        paths += [os.path.relpath(os.path.join(root, f), proj) for f in files]
+    for rel in paths:
+        full = os.path.join(proj, rel)
+        if os.path.isfile(full):
+            snap[rel] = hashlib.sha256(open(full, "rb").read()).hexdigest()
+    print(json.dumps(snap))
+elif cmd == "diff":       # snapshot-before snapshot-after -> changed paths
+    b, n = json.loads(a[0]), json.loads(a[1])
+    print("\n".join(sorted(p for p in set(b) | set(n) if b.get(p) != n.get(p))))
+elif cmd == "settings":   # proj kit drop-csv market... (name=repo)
+    proj, kit, drop, markets = a[0], a[1], CSV(a[2]), a[3:]
+    path = os.path.join(proj, ".claude", "settings.json")
+    try:
+        s = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
+    except ValueError as e:
+        sys.exit(f"{path}: not valid JSON ({e})")
+    if not isinstance(s, dict):
+        sys.exit(f"{path}: top level is not an object")
+    orig = copy.deepcopy(s)
+    for pair in markets:
+        name, repo = pair.split("=", 1)
+        want = {"source": {"source": "github", "repo": repo}}
+        ekm = s.setdefault("extraKnownMarketplaces", {})
+        if ekm.get(name) != want:
+            ekm[name] = want
+    for p in drop:        # a pack that was uninstalled must not stay enabled
+        s.get("enabledPlugins", {}).pop(f"{p}@{kit}", None)
+    if s != orig or not os.path.exists(path):
+        write_file(path, dump(s))
+elif cmd == "manifest_ref":   # proj
+    try:
+        print(json.load(open(os.path.join(a[0], ".claude", "agent-kit.json"))).get("web_design_guidelines_ref") or "")
+    except (OSError, ValueError, AttributeError):
+        print("")
+elif cmd == "manifest":   # proj kit-repo version packs-csv ref
+    path = os.path.join(a[0], ".claude", "agent-kit.json")
+    text = dump({"kit": "agent-kit", "kit_repo": a[1] or None, "kit_version": a[2], "packs": CSV(a[3]),
+                 "web_design_guidelines_ref": a[4] or None})
+    if not os.path.exists(path) or open(path, encoding="utf-8").read() != text:
+        write_file(path, text)
+elif cmd == "mcp":        # text of `claude mcp list` -> connected | failing | missing  (basic-memory only)
+    state = "missing"
+    for line in a[0].splitlines():
+        name, _, rest = line.partition(": ")
+        if name.strip() == "basic-memory" or name.strip().endswith(":basic-memory"):
+            ok = "Connected" in rest and not re.search(r"Not connected|✘|Failed|Needs auth", rest)
+            if ok:
+                state = "connected"; break
+            state = "failing"
+    print(state)
+elif cmd == "final":      # changed version installed updated removed files memory  (csv lists)
+    print(json.dumps({"ok": True, "changed": a[0] == "1", "kit_version": a[1], "installed": CSV(a[2]), "updated": CSV(a[3]),
+                      "removed": CSV(a[4]), "files": CSV(a[5]), "memory": a[6]}, separators=(",", ":")))
+PY
+}
+
+# Read-only: is the basic-memory MCP server registered and connected, as seen from a project dir?
+bm_mcp_status() { # [project-dir]  -> connected | failing | missing
+  local out="" t=()
+  command -v timeout >/dev/null 2>&1 && t=(timeout 90)
+  out="$(cd "${1:-.}" && ${t[@]+"${t[@]}"} claude mcp list </dev/null 2>/dev/null)" || true
+  ensure_py mcp "$out"
+}
+
+ek_run() { "$@" </dev/null 3>&-; }   # children: no stdin, and not the saved stdout (fd 3)
+
+ek_fail() { # exit-code message...
+  local code="$1" msg; shift
+  msg="${*//\\/}"; msg="${msg//\"/\'}"
+  printf '%s %s\n' "$(paint 2 '1;31' 'xx')" "$*" >&2
+  [ "${E_JSON:-0}" = 1 ] && printf '{"ok":false,"code":%s,"error":"%s"}\n' "$code" "$msg" >&3
+  exit "$code"
+}
+
+cmd_ensure() {
+  exec 3>&1                                 # fd 3 = the real stdout, kept for the one JSON line
+  E_JSON=0; E_TMP=""
+  local proj="" have_path=0 design=0 code=0 a
+  for a in "$@"; do [ "$a" = "--json" ] && E_JSON=1; done
+  [ -t 1 ] || export NO_COLOR=1             # no escape codes unless stdout is a terminal
+  [ "$E_JSON" = 1 ] && exec 1>&2            # with --json every progress line goes to stderr
+
+  for a in "$@"; do
+    case "$a" in
+      --json) ;;
+      design) design=1 ;;
+      code) code=1 ;;
+      -*) ek_fail 2 "unknown option: $a (usage: $0 ensure <path> [design] [code] [--json])" ;;
+      *) if [ "$have_path" = 0 ]; then proj="$a"; have_path=1
+         else ek_fail 2 "unknown argument: $a (usage: $0 ensure <path> [design] [code] [--json])"; fi ;;
+    esac
+  done
+  [ "$have_path" = 1 ] && [ -n "$proj" ] || ek_fail 2 "usage: $0 ensure <path> [design] [code] [--json]"
+
+  local t; for t in claude git python3; do
+    command -v "$t" >/dev/null 2>&1 || ek_fail 3 "missing '$t' — run: $0 setup"
+  done
+
+  [ -d "$proj" ] || ek_fail 2 "not a directory: $proj (ensure never creates the project)"
+  [ -e "$proj/.git" ] || ek_fail 2 "$proj is not the root of a git working tree (no .git); ensure never runs git init"
+  proj="$(cd "$proj" && pwd -P)"
+  case "$proj/" in "$(cd "$KIT_DIR" && pwd -P)"/*) ek_fail 2 "keep projects outside the kit folder ($KIT_DIR)" ;; esac
+  local planning="${PLANNING:-}"
+  case "$planning" in ""|zsl|mattpocock) ;; *) ek_fail 2 "PLANNING must be zsl or mattpocock" ;; esac
+
+  # --- nothing above wrote anything; from here on, scratch lives in $TMPDIR (the root FS may be read-only)
+  E_TMP="$(mktemp -d "${TMPDIR:-/tmp}/agent-kit-ensure.XXXXXX")" || ek_fail 6 "cannot create a scratch dir in ${TMPDIR:-/tmp}"
+  trap 'rm -rf "$E_TMP"' EXIT
+
+  local kit repo="${KIT_REPO:-}" url
+  kit="$(ensure_py mkname "$KIT_DIR")" || ek_fail 4 "cannot read the marketplace name from $KIT_DIR/.claude-plugin/marketplace.json"
+  if [ -z "$repo" ]; then   # no KIT_REPO: take it from the kit's own origin remote (the project is never asked)
+    url="$(git -C "$KIT_DIR" remote get-url origin 2>/dev/null)" || url=""
+    case "$url" in
+      git@github.com:*|https://github.com/*|ssh://git@github.com/*)
+        repo="${url#git@github.com:}"; repo="${repo#https://github.com/}"; repo="${repo#ssh://git@github.com/}"
+        repo="${repo%.git}"; repo="${repo%/}" ;;
+    esac
+  fi
+  [ -n "$repo" ] || warn "no KIT_REPO and no GitHub origin on the kit — settings.json won't say where $kit lives"
+
+  local snap_before; snap_before="$(ensure_py snapshot "$proj")"
+
+  # the packs wanted, and the upstream marketplaces they depend on (read from the kit's marketplace.json), so a
+  # code-only repo does not clone hallmark and a cold run stays fast
+  local p wanted=(kit-core) ups=() row name src
+  [ "$design" = 1 ] && wanted+=(kit-design)
+  [ "$code" = 1 ] && wanted+=(kit-code)
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    for row in "${UPSTREAM_MARKETPLACES[@]}"; do [ "${row%%=*}" = "$name" ] && ups+=("$row"); done
+    [[ " ${ups[*]-} " == *" $name="* ]] || warn "$name is a dependency of the kit but not in UPSTREAM_MARKETPLACES; not registered"
+  done < <(ensure_py needed "$KIT_DIR" "$(IFS=,; echo "${wanted[*]}")")
+
+  # 1. marketplaces: add what is missing (exact name match), then update each
+  local mk state fresh=" "
+  mk="$(ek_run claude plugin marketplace list --json)" || ek_fail 4 "claude plugin marketplace list --json failed"
+  for row in ${ups[@]+"${ups[@]}"}; do
+    name="${row%%=*}"; src="${row#*=}"
+    if [ "$(ensure_py mkstate "$mk" "$name" "")" = missing ]; then
+      say "adding marketplace $name ($src)"
+      ek_run claude plugin marketplace add "https://github.com/$src.git" || ek_fail 4 "could not add marketplace $name"
+      fresh+="$name "
+    fi
+  done
+  state="$(ensure_py mkstate "$mk" "$kit" "$KIT_DIR")"
+  if [ "$state" != ok ]; then
+    say "pointing marketplace $kit at $KIT_DIR"
+    ek_run claude plugin marketplace add "$KIT_DIR" || ek_fail 4 "could not add marketplace $kit from $KIT_DIR"
+  fi
+  for row in ${ups[@]+"${ups[@]}"} "$kit=-"; do
+    name="${row%%=*}"
+    case "$fresh" in *" $name "*) continue ;; esac   # just cloned: already current
+    ek_run claude plugin marketplace update "$name" || ek_fail 4 "could not update marketplace $name"
+  done
+
+  # 2. packs, at project scope in this repo (claude resolves dependencies)
+  local before after inst installed=() updated=() removed=() tried=()
+  before="$(cd "$proj" && ek_run claude plugin list --json)" || ek_fail 5 "claude plugin list --json failed"
+  inst=" $(ensure_py installed "$before" "$proj" "$kit" | tr '\n' ' ')"
+  for p in "${wanted[@]}"; do
+    if [[ "$inst" == *" $p "* ]]; then
+      say "updating $p@$kit"
+      (cd "$proj" && ek_run claude plugin update "$p@$kit" --scope project -y) || ek_fail 5 "could not update $p@$kit"
+      tried+=("$p")
+    else
+      say "installing $p@$kit"
+      (cd "$proj" && ek_run claude plugin install "$p@$kit" --scope project -y) || ek_fail 5 "could not install $p@$kit"
+      installed+=("$p")
+    fi
+  done
+  for p in kit-design kit-code; do   # packs left out are removed (checked first); kit-core never is
+    [[ " ${wanted[*]} " == *" $p "* ]] && continue
+    if [[ "$inst" == *" $p "* ]]; then
+      say "removing $p@$kit"
+      (cd "$proj" && ek_run claude plugin uninstall "$p@$kit" --scope project -y) || ek_fail 5 "could not uninstall $p@$kit"
+      removed+=("$p")
+    fi
+  done
+  after="$(cd "$proj" && ek_run claude plugin list --json)" || ek_fail 5 "claude plugin list --json failed"
+  local tried_csv; tried_csv="$(IFS=,; echo "${tried[*]-}")"
+  while IFS= read -r p; do [ -n "$p" ] && updated+=("$p"); done < <(ensure_py updated "$before" "$after" "$proj" "$kit" "$tried_csv")
+
+  # 3. web-design-guidelines: present only with design. Fetched at exactly $WDG_REF; no network when the
+  #    manifest already records that ref and the folder is there. A different WDG_REF replaces the folder.
+  local skill="$proj/.claude/skills/web-design-guidelines" ref=""
+  if [ "$design" = 1 ]; then
+    ref="$WDG_REF"
+    if [ "$(ensure_py manifest_ref "$proj")" = "$ref" ] && [ -f "$skill/SKILL.md" ]; then
+      say "web-design-guidelines already at ${ref:0:12}"
+    else
+      say "fetching web-design-guidelines at ${ref:0:12}"
+      ( vendor_one vercel-labs/agent-skills skills/web-design-guidelines "$E_TMP/wdg" "$ref" >/dev/null ) </dev/null 3>&- \
+        || ek_fail 6 "could not fetch web-design-guidelines at $ref"
+      { rm -rf "$skill" && mkdir -p "$(dirname "$skill")" && cp -R "$E_TMP/wdg" "$skill" \
+        && printf '*\n' > "$skill/.gitignore"; } || ek_fail 6 "could not write $skill"   # upstream has no licence: keep it out of git
+    fi
+  elif [ -e "$skill" ]; then
+    say "removing web-design-guidelines (design not wanted)"
+    rm -rf "$skill" || ek_fail 6 "could not remove $skill"
+  fi
+
+  # 4. project files
+  local markets=(${ups[@]+"${ups[@]}"}) drop=() packs_csv
+  [ -n "$repo" ] && markets+=("$kit=$repo")
+  [[ " ${wanted[*]} " == *" kit-design "* ]] || drop+=(kit-design)
+  [[ " ${wanted[*]} " == *" kit-code "* ]] || drop+=(kit-code)
+  packs_csv="$(IFS=,; echo "${wanted[*]}")"
+  ensure_py settings "$proj" "$kit" "$(IFS=,; echo "${drop[*]-}")" "${markets[@]}" </dev/null 3>&- || ek_fail 6 "could not write $proj/.claude/settings.json"
+  ensure_py manifest "$proj" "$repo" "$KIT_VERSION" "$packs_csv" "$ref" </dev/null 3>&- || ek_fail 6 "could not write $proj/.claude/agent-kit.json"
+
+  local pn pb ph
+  [ -n "$planning" ] || { ensure_py hasprefix "$after" "zsl@" && planning=zsl || planning=mattpocock; }
+  case "$planning" in
+    zsl) pn=/zsl:grill-me pb=/zsl:to-prd ph=/zsl:handoff ;;
+    *)   pn=/grill-me pb=/wayfinder ph=/handoff ;;
+  esac
+  local orch=0 uig=0
+  [ -f "$proj/.claude/agents/orchestrator.md" ] && orch=1
+  [ -f "$proj/.claude/agents/ui-guide.md" ] && uig=1
+  write_claude_block "$proj/CLAUDE.md" "$(kit_block "$proj" "$design" "$code" 1 "$orch" "$uig" "$pn" "$pb" "$ph")" \
+    || ek_fail 6 "could not write $proj/CLAUDE.md"
+
+  # 5. memory: status only, never configured here. A warning, not a failure.
+  local memory; memory="$(bm_mcp_status "$proj")"
+  [ "$memory" = connected ] || { memory=missing; warn "basic-memory MCP server is not registered or not connected here; agents will stop at the memory rule (set it up with: $0 project <path>)"; }
+
+  # 6. what changed, from hashes of the files ensure may write
+  local snap_after files_nl files_csv changed=0
+  snap_after="$(ensure_py snapshot "$proj")"
+  files_nl="$(ensure_py diff "$snap_before" "$snap_after")"
+  files_csv="$(printf '%s' "$files_nl" | tr '\n' ',')"; files_csv="${files_csv%,}"
+  [ -n "$files_nl" ] && changed=1
+  say "$([ "$changed" = 1 ] && echo "done: ${files_csv//,/, }" || echo "done: already up to date")"
+  ensure_py final "$changed" "$KIT_VERSION" "$(IFS=,; echo "${installed[*]-}")" "$(IFS=,; echo "${updated[*]-}")" \
+    "$(IFS=,; echo "${removed[*]-}")" "$files_csv" "$memory" >&3
 }
 
 cmd_usage() { # [--since YYYY-MM-DD] — rough spend from local transcripts; list prices, so an estimate only
@@ -1902,6 +2293,12 @@ for path in sys.argv[1:]:
         how = cfg.get("url") or " ".join([cfg.get("command", "")] + cfg.get("args", []))
         print(f"   {plugin:<11} {name:<16} mcp__plugin_{plugin}_{name}__*   {how}")
 PY
+  echo; say "Basic Memory (read-only check of \`claude mcp list\` from here; doctor never configures it)"
+  case "$(bm_mcp_status .)" in
+    connected) echo "   basic-memory: registered and connected" ;;
+    failing)   echo "   basic-memory: registered but not connected (see: claude mcp list)" ;;
+    *)         echo "   basic-memory: not registered here (set it up with: $0 project <path>)" ;;
+  esac
   if have node; then node_old_warn; else warn "node is not installed — the MCP servers can't start"; fi
 
   # dependencies bring whole upstream plugins with them; this shows what each one costs every turn
@@ -1962,6 +2359,7 @@ main() {
     sync) cmd_sync "$@" ;;
     register) cmd_register "$@" ;;
     setup) cmd_setup ;;
+    ensure) cmd_ensure "$@" ;;
     project) cmd_project "$@" ;;
     repo) cmd_repo "$@" ;;
     new) cmd_new "$@" ;;

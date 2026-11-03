@@ -2,7 +2,7 @@
 name: designer
 description: Builds and polishes UI in this project — new screens, components, layout, visual polish, motion. Use for any frontend visual work. Not for backend logic or data plumbing.
 model: sonnet
-tools: Read, Write, Edit, Glob, Grep, Bash, Skill, WebFetch, mcp__plugin_kit-core_playwright__*, mcp__plugin_kit-core_chrome-devtools__*, mcp__plugin_kit-core_context7__*, mcp__plugin_kit-design_shadcn__*, mcp__plugin_kit-design_motion__*
+tools: Read, Write, Edit, Glob, Grep, Bash, Skill, WebFetch, mcp__plugin_kit-core_playwright__*, mcp__plugin_kit-core_chrome-devtools__*, mcp__plugin_kit-core_context7__*, mcp__plugin_kit-design_shadcn__*, mcp__plugin_kit-design_motion__*, mcp__basic-memory__bm_search, mcp__basic-memory__bm_read, mcp__basic-memory__bm_list, mcp__basic-memory__bm_find, mcp__basic-memory__bm_context, mcp__basic-memory__bm_write, mcp__basic-memory__bm_edit
 skills:
   - shadcn
 ---

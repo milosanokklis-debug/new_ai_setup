@@ -1,0 +1,67 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  version-bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Plugin changes need a KIT_VERSION bump
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            tests/version-bump.sh "origin/${{ github.base_ref }}"
+          else
+            # push: compare with the previous tip (falls back to HEAD~1 for a new branch)
+            tests/version-bump.sh "${{ github.event.before }}"
+          fi
+
+  static:
+    # cheap, independent checks (tests/vet.sh fetches AgentShield through npx, so it is not run here)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n agent-kit.sh tests/*.sh
+      - run: tests/skills.sh
+
+  contract:
+    # POLICY: no subscription token or other secret is ever put into GitHub Actions (public repo).
+    # Hosted CI therefore runs only the offline cases that never call `claude plugin`: 8, 10, 11, 12.
+    # (4 and 6 need a successful ensure, which runs `claude plugin`, so they run locally / self-hosted.)
+    runs-on: ubuntu-latest
+    container:
+      image: debian:13
+      # The tmpfs mounts give the non-root user ccd a writable HOME and scratch space. A fully --read-only root
+      # cannot work while this job still apt-installs its toolchain; add `--read-only` here once the toolchain
+      # is baked into a prebuilt image (then the install step below goes away).
+      options: --tmpfs /tmp --tmpfs /home/ccd:exec,mode=1777
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain (Claude Code version from .versions)
+        run: |
+          V="$(sed -n 's/^CLAUDE_CODE_VERSION=//p' .versions 2>/dev/null | head -1)"
+          V="${V:-2.1.317}"
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends ca-certificates git python3 nodejs npm util-linux
+          npm i -g "@anthropic-ai/claude-code@$V"
+          useradd --no-create-home --home-dir /home/ccd --shell /bin/bash ccd
+          git config --system --add safe.directory '*'
+      - name: Contract tests, offline subset (as non-root ccd)
+        run: |
+          runuser -u ccd -- env HOME=/home/ccd TMPDIR=/tmp "PATH=$PATH" bash tests/contract.sh --cases 8,10,11,12
+
+  # Full contract suite on a self-hosted runner whose user is already logged in to Claude. No secrets.
+  # Enable by setting the repository variable SELF_HOSTED_RUNNER to a non-empty value.
+  # contract-full:
+  #   if: vars.SELF_HOSTED_RUNNER
+  #   runs-on: self-hosted
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - run: bash tests/contract.sh

@@ -2,7 +2,7 @@
 name: reviewer
 description: Correctness and security review of the current diff — bugs, edge cases, error handling, security, missing tests. Use before merging any code change. Read-only.
 model: sonnet
-tools: Read, Glob, Grep, Bash, Skill, WebFetch, mcp__plugin_kit-core_context7__*, mcp__plugin_kit-code_semgrep__*
+tools: Read, Glob, Grep, Bash, Skill, WebFetch, mcp__plugin_kit-core_context7__*, mcp__plugin_kit-code_semgrep__*, mcp__basic-memory__bm_search, mcp__basic-memory__bm_read, mcp__basic-memory__bm_list, mcp__basic-memory__bm_find, mcp__basic-memory__bm_context
 ---
 Review `git diff` (or the diff against the base branch if asked) for correctness and security only. Ignore style.
 
