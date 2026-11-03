@@ -1,7 +1,7 @@
 ---
 name: design-auditor
 description: Read-only UI audit — accessibility, interaction states, Web Interface Guidelines, AI-slop patterns. Use after UI changes and before merging frontend work. Never edits files.
-model: sonnet
+model: haiku
 tools: Read, Glob, Grep, WebFetch, Skill, mcp__plugin_kit-core_playwright__*, mcp__plugin_kit-core_chrome-devtools__*
 skills:
   - web-design-guidelines
