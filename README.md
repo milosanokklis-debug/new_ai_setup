@@ -35,6 +35,9 @@ flowchart TB
         main --> designer & auditor & coder & reviewer & simple & explore
     end
 
+    mcp["MCP servers (per plugin .mcp.json)<br/>playwright · chrome-devtools · context7<br/>shadcn · motion · semgrep"] -.-> designer & auditor & coder & reviewer
+    guide["ui-guide<br/>Sonnet · read-only · claude --agent ui-guide"] -.-> mcp
+
     core["kit-core<br/>orchestrator guard hook<br/>find-skills (manual only)"] -.-> main
     zsl["my zsl plugin<br/>grill-me, to-prd, handoff, tdd…"] -.-> main
     bm[("Basic Memory<br/>~/basic-memory-projects/&lt;project&gt;")] <--> main
@@ -46,7 +49,9 @@ flowchart TB
 |---|---|---|
 | **Main session** | The Claude Code session I talk to. It runs as the `orchestrator` agent: it plans and hands work to subagents, and has no tools to edit files. | `.claude/agents/orchestrator.md` in each project |
 | **Subagents** | Specialists with their own instructions, tools and model. Each starts with a clean context, so they're cheap. | `plugins/kit-*/agents/*.md` |
+| **MCP servers** | Tools agents call: a headless browser (playwright, chrome-devtools), current library docs (context7), shadcn and Motion docs, Semgrep. Each plugin ships its own in `.mcp.json`; an agent gets one only if its `tools:` line names it (`mcp__plugin_<plugin>_<server>__*`). The orchestrator gets none. | `plugins/kit-*/.mcp.json` |
 | **Skills** | Reusable know-how (how to do TDD, how to use shadcn…). Only the one-line description loads until a skill is used. | the plugins and their dependencies |
+| **ui-guide** | A read-only session for questions about the UI skills (which one fits, what it says, how it applies to this code). Written when the design pack is on. Start it with `claude --agent ui-guide`. | `.claude/agents/ui-guide.md` in each project |
 | **Packs** | `kit-core`, `kit-design` and `kit-code`. All three by default; `--no-design` / `--no-code` leave one out. | installed per project |
 | **AGENTS.md / CLAUDE.md** | The project's rules. `CLAUDE.md` imports `AGENTS.md` and adds a short note on which agent to use for what. | in each project |
 | **Basic Memory** | Long-term memory: plain Markdown notes Claude reads and writes through an MCP server. | `~/basic-memory-projects/<project>` |
@@ -63,6 +68,8 @@ flowchart TB
    cd ~/agent-kit
    ./agent-kit.sh setup
    ```
+
+   `setup` also installs semgrep, the TypeScript and Python language servers (npm versions pinned in `agent-kit.sh`, installed with `--ignore-scripts`) and the Chromium for the pinned Playwright MCP server, and warns if Chrome is missing or Node is older than 20.19.
 
    On a Mac without Homebrew, `setup` stops and prints the one-line Homebrew install command. If it says to add `~/.local/bin` to my PATH, I add that line to `~/.zshrc` and open a new terminal.
 
@@ -143,6 +150,8 @@ cd ~/code/my-app && claude
 ```
 
 The first time, Claude Code asks me to approve the `basic-memory` server. I say yes. From then on it starts by itself every session.
+
+`project` also installs, only when the project calls for them: `typescript-lsp` (a `package.json` or `tsconfig.json` in the root or up to two folders down), `pyright-lsp` (`requirements.txt` or `pyproject.toml`), and the GSAP skills (a `package.json` that depends on `gsap`). The other upstream marketplaces are listed in `UPSTREAM_MARKETPLACES` in `agent-kit.sh`. Taste, the GSAP skills and the two language-server plugins are not added as marketplaces: they are entries in this kit's own `marketplace.json`, each pinned by `sha` to the commit vetted in `SECURITY-REVIEW.md` (see its Pins section). Install them as `<name>@agent-kit`.
 
 To add the kit to a project that already exists, use `./agent-kit.sh project <path>` (no repo changes), or `./agent-kit.sh repo <path>` to add only the gates.
 
@@ -308,14 +317,15 @@ My Pro usage is shared between the Claude app and Claude Code, and every subagen
 | Habit | Why it helps |
 |---|---|
 | Install only the packs a project needs | Every installed skill's description loads every turn. |
+| Know what the MCP servers cost | Each server's tool list loads when its agent starts, so only agents that name a server pay for it (the orchestrator pays for none). `./agent-kit.sh doctor` lists the servers. Playwright and Chrome DevTools run headless. |
 | Run `./agent-kit.sh doctor` now and then | Shows skills and tokens per plugin, plus duplicate skill names. The kit is about 45 skills / ~4k tokens a turn, plus the Basic Memory plugin. |
 | Let subagents do the work | The orchestrator forces this: Opus only plans and reviews, Sonnet/Haiku write the code. |
 | `/zsl:handoff`, then `/clear` | Long sessions get expensive and worse. |
 | `REVIEW_MODEL=haiku` | Cheaper push reviews. |
 
-Before adding any new skill, run `./agent-kit.sh doctor --scan` (AgentShield checks agent config for risky permissions and prompt injection).
+Before adding any new skill or plugin, run `./agent-kit.sh vet <path|owner/repo>`, which scans it without running anything and exits non-zero on a high-severity finding or any scan that could not run (`NOT SCANNED`); `sync` runs it on every vendored skill.
 
-The packs pull skills from a few third-party GitHub marketplaces (Addy Osmani, Hallmark, Design and Refine, Basic Memory, and Matt Pocock only when my zsl plugin isn't there). My own skills are vendored at pinned commits (`VENDORED.md`); the upstream plugins update when their authors push. That's a trust decision. Run `doctor --scan` after updates.
+The packs pull skills from a few third-party GitHub marketplaces (Addy Osmani, Hallmark, Design and Refine, Taste, the official Claude plugins marketplace for the language servers, GSAP when a project uses it, Basic Memory, and Matt Pocock only when my zsl plugin isn't there). My own skills are vendored at pinned commits (`VENDORED.md`); the upstream plugins update when their authors push. That's a trust decision. Run `doctor --scan` after updates.
 
 ---
 
@@ -340,12 +350,14 @@ The packs pull skills from a few third-party GitHub marketplaces (Addy Osmani, H
 
 | Command | Does |
 |---|---|
-| `./agent-kit.sh setup` | Install every tool the kit needs (once per machine; safe to re-run) |
+| `./agent-kit.sh setup` | Install every tool the kit needs, plus semgrep, language servers and Playwright Chromium (once per machine; safe to re-run) |
 | `./agent-kit.sh new <path> [--no-design] [--no-code]` | Everything: repo, gates, packs, Basic Memory, GitHub. Installs missing tools first |
 | `./agent-kit.sh project <path> [--no-design] [--no-code]` | Packs, orchestrator, AGENTS.md/CLAUDE.md and Basic Memory only. Re-run it to update an older project |
 | `./agent-kit.sh repo <path>` | Gates and GitHub only |
-| `./agent-kit.sh doctor [--scan]` | What's installed and what it costs per turn |
-| `./agent-kit.sh sync .` | Re-pull vendored skills from upstream (see `VENDORED.md`) |
+| `./agent-kit.sh doctor [--scan]` | What's installed, which MCP servers the kit ships, and what the skills cost per turn |
+| `./agent-kit.sh vet <path\|owner/repo>` | Security-check a skill or plugin before installing it; non-zero exit on high-severity findings |
+| `./tests/vet.sh` | Check that `vet` fails a bad fixture (zero-width space, `curl \| sh`) and passes a clean one |
+| `./agent-kit.sh sync .` | Re-pull vendored skills from upstream (see `VENDORED.md`), then vet each one |
 | `./agent-kit.sh register .` | Add the marketplaces to Claude Code (once per machine) |
 
 Flags for `new`/`project`: `--no-memory` (skip Basic Memory), `--graph` (code graph for big repos). Flags for `new`/`repo`: `--public`, `--no-github`, `--name NAME`.

@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "shadcn": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "shadcn@4.23.0",
+        "mcp"
+      ]
+    },
+    "motion": {
+      "type": "http",
+      "url": "https://mcp.motion.dev"
+    }
+  }
+}
