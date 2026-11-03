@@ -23,6 +23,7 @@ This repo is also a Claude Code plugin marketplace. The `plugins/` folder holds 
 - **Design skills.** Taste is part of `kit-design`. The GSAP skills are added only when the project depends on `gsap`. A new `ui-references` skill lists animation and design reference sites and the rules for borrowing from them. Impeccable is left out on purpose: its always-on hooks download and run a native binary. Figma and frontend-design were not added.
 - **`claude --agent ui-guide`** is a read-only session for questions about the UI skills. Try "Which skill should I use to add a page-transition animation?" or "What does the Taste skill say about spacing, and does this component follow it?".
 - **Security vetting.** `./agent-kit.sh vet <path|owner/repo>` scans a skill or plugin before it goes in. [SECURITY-REVIEW.md](SECURITY-REVIEW.md) records what was checked. Upstream plugins are pinned by `sha` through this kit's own `marketplace.json`.
+- **0.5.0: Vercel agent skills** (`vercel-labs/agent-skills`, pinned). React skills are installed for projects that depend on `react` or `next`; `writing-guidelines` is fetched into every project and used by the reviewer. Left out: vercel-optimize, deploy-to-vercel, vercel-cli-with-tokens. Pin details are in [VENDORED.md](VENDORED.md) and [SECURITY-REVIEW.md](SECURITY-REVIEW.md).
 - **0.4.1 fixes.** The shadcn server failed with `sh: 1: shadcn: not found`: a first-run npx download that was cut off left a half-installed cache entry with no command in it. A slow first download could also time out context7. `setup` now removes broken entries and pre-fetches all pinned npx servers.
 
 ---
@@ -167,7 +168,7 @@ cd ~/code/my-app && claude
 
 The first time, Claude Code asks me to approve the `basic-memory` server. I say yes. From then on it starts by itself every session.
 
-`project` also installs, only when the project calls for them: `typescript-lsp` (a `package.json` or `tsconfig.json` in the root or up to two folders down), `pyright-lsp` (`requirements.txt` or `pyproject.toml`), and the GSAP skills (a `package.json` that depends on `gsap`). The other upstream marketplaces are listed in `UPSTREAM_MARKETPLACES` in `agent-kit.sh`. Taste, the GSAP skills and the two language-server plugins are not added as marketplaces: they are entries in this kit's own `marketplace.json`, each pinned by `sha` to the commit vetted in `SECURITY-REVIEW.md` (see its Pins section). Install them as `<name>@agent-kit`.
+`project` also installs, only when the project calls for them: `typescript-lsp` (a `package.json` or `tsconfig.json` in the root or up to two folders down), `pyright-lsp` (`requirements.txt` or `pyproject.toml`), the React skills (a `package.json` that depends on `react` or `next`), and the GSAP skills (a `package.json` that depends on `gsap`; design pack only). The other upstream marketplaces are listed in `UPSTREAM_MARKETPLACES` in `agent-kit.sh`. Taste, the React skills, the GSAP skills and the two language-server plugins are not added as marketplaces: they are entries in this kit's own `marketplace.json`, each pinned by `sha` to the commit vetted in `SECURITY-REVIEW.md` (see its Pins section). Install them as `<name>@agent-kit`.
 
 To add the kit to a project that already exists, use `./agent-kit.sh project <path>` (no repo changes), or `./agent-kit.sh repo <path>` to add only the gates.
 
@@ -373,6 +374,7 @@ The packs pull skills from a few third-party GitHub marketplaces (Addy Osmani, H
 | `./agent-kit.sh repo <path>` | Gates and GitHub only |
 | `./agent-kit.sh doctor [--scan]` | What's installed, which MCP servers the kit ships, and what the skills cost per turn |
 | `./agent-kit.sh vet <path\|owner/repo>` | Security-check a skill or plugin before installing it; non-zero exit on high-severity findings |
+| `./tests/skills.sh` | Check every kit skill has valid name/description frontmatter; own skills must stay under 500 lines |
 | `./tests/vet.sh` | Check that `vet` fails a bad fixture (zero-width space, `curl \| sh`) and passes a clean one |
 | `./agent-kit.sh sync .` | Re-pull vendored skills from upstream (see `VENDORED.md`), then vet each one |
 | `./agent-kit.sh register .` | Add the marketplaces to Claude Code (once per machine) |

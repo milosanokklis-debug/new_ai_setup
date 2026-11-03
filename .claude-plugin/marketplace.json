@@ -6,7 +6,7 @@
   "description": "Personal Claude Code kit: core + design + code packs",
   "metadata": {
     "description": "Personal Claude Code kit: core + design + code packs",
-    "version": "0.4.1"
+    "version": "0.5.0"
   },
   "allowCrossMarketplaceDependenciesOn": [
     "addy-agent-skills",
@@ -18,7 +18,7 @@
     {
       "name": "kit-core",
       "source": "./plugins/kit-core",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "description": "Base pack: methodology, orchestrator guard, Playwright, Chrome DevTools, Context7.",
       "dependencies": [
         "agent-skills@addy-agent-skills"
@@ -27,7 +27,7 @@
     {
       "name": "kit-design",
       "source": "./plugins/kit-design",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "description": "UI pack: designer, design-auditor, design skills, shadcn and Motion MCP.",
       "dependencies": [
         "kit-core",
@@ -39,7 +39,7 @@
     {
       "name": "kit-code",
       "source": "./plugins/kit-code",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "description": "Code pack: coder, reviewers, ponytail-review, Semgrep MCP.",
       "dependencies": [
         "kit-core"
@@ -71,6 +71,32 @@
         "taste",
         "ui",
         "dashboard"
+      ]
+    },
+    {
+      "name": "vercel-react-skills",
+      "source": {
+        "source": "github",
+        "repo": "vercel-labs/agent-skills",
+        "sha": "1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62"
+      },
+      "description": "Vercel's React and Next.js skills: performance best practices, component composition patterns, and native View Transitions.",
+      "skills": [
+        "./skills/react-best-practices",
+        "./skills/composition-patterns",
+        "./skills/react-view-transitions"
+      ],
+      "author": {
+        "name": "Vercel"
+      },
+      "homepage": "https://github.com/vercel-labs/agent-skills",
+      "repository": "https://github.com/vercel-labs/agent-skills",
+      "license": "MIT",
+      "keywords": [
+        "skills",
+        "react",
+        "nextjs",
+        "performance"
       ]
     },
     {

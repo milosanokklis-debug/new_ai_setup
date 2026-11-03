@@ -10,4 +10,5 @@ You implement one scoped task at a time.
 - Prefer the platform, the standard library and code that already exists in the repo over new code or new dependencies.
 - If graphify-out/GRAPH_REPORT.md exists, read it before searching the codebase.
 - Use context7 for current library and framework docs instead of relying on memory. Use playwright to check a running page when your change affects one.
+- For React or Next.js code, follow the vercel-react-best-practices skill if it is installed (load it with the Skill tool).
 - Finish with: what changed, how you verified it (commands run and their result), and anything left undone.
