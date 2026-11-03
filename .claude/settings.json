@@ -62,5 +62,6 @@
     "rememberFolder": "bm-remember"
   },
   "outputStyle": "basic-memory",
-  "agent": "orchestrator"
+  "agent": "orchestrator",
+  "model": "opusplan"
 }

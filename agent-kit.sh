@@ -4,19 +4,24 @@
 #   ./agent-kit.sh setup                              install everything below that's missing (brew/apt/dnf)
 #   ./agent-kit.sh init     [kit-dir]                 build the marketplace repo (default ./agent-kit)
 #   ./agent-kit.sh sync     [kit-dir]                 re-pull vendored skills from upstream
-#   ./agent-kit.sh register [kit-dir]                 add upstream + kit marketplaces to your user settings
-#   ./agent-kit.sh project  <path> [--no-design] [--no-code] [--graph] [--no-memory]
+#   ./agent-kit.sh register [kit-dir]                 add upstream + kit marketplaces to your user settings, and a
+#                                                     Haiku Explore agent to ~/.claude/agents (never over your own file)
+#   ./agent-kit.sh project  <path> [--no-design|--no-ui] [--no-code] [--graph] [--no-memory]
 #                                                     wire a project to the kit (all packs unless you opt out;
+#                                                     --no-ui leaves out the UI pack: kit-design, hallmark,
+#                                                     design-and-refine, designer, design-auditor;
 #                                                     re-run it any time to update an existing project)
 #   ./agent-kit.sh repo     <path> [--public] [--no-github] [--name NAME]
 #                                                     git + GitHub repo with green-light gates (gitleaks,
 #                                                     verify, independent reviewer) and branch protection
-#   ./agent-kit.sh new      <path> [--no-design] [--no-code] [--graph] [--no-memory] [--public] [--no-github]
+#   ./agent-kit.sh new      <path> [--no-design|--no-ui] [--no-code] [--graph] [--no-memory] [--public] [--no-github]
 #                                                     start a project: repo + gates + kit, in one step
 #   ./agent-kit.sh doctor   [--scan]                  installed plugins, MCP servers, skills per plugin and their
 #                                                     token cost; --scan adds an AgentShield security scan
 #   ./agent-kit.sh vet      <path|owner/repo>         security-check a skill or plugin before installing it
 #                                                     (exits non-zero on high-severity findings)
+#   ./agent-kit.sh usage    [--since YYYY-MM-DD]      tokens and estimated $ per model and per agent type,
+#                                                     from your local transcripts (~/.claude/projects)
 #
 # Env:
 #   METHOD=agent-skills|superpowers   methodology layer for kit-core (default agent-skills)
@@ -34,7 +39,7 @@ set -euo pipefail
 
 KIT_NAME="${KIT_NAME:-agent-kit}"
 METHOD="${METHOD:-agent-skills}"
-KIT_VERSION="0.5.0"
+KIT_VERSION="0.6.0"
 GITLEAKS_VERSION="${GITLEAKS_VERSION:-8.30.1}"
 AGENT_SKILLS_SHA="1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62"   # vercel-labs/agent-skills commit for the fetched guideline skills
 SEMGREP_VERSION="1.183.0"   # pinned for setup, vet and the reviewer's MCP server; update on purpose
@@ -441,7 +446,7 @@ MD
   cat > "$kit/plugins/kit-design/README.md" <<MD
 # kit-design
 UI pack for the $KIT_NAME marketplace. Adds the designer agent (preloads shadcn; loads emil-design-eng
-for motion and polish) and the read-only design-auditor agent (web-design-guidelines plus Hallmark audit).
+for motion and polish) and the read-only, haiku-model design-auditor agent (web-design-guidelines plus Hallmark audit).
 Pulls in Hallmark, Design and Refine and Taste as dependencies (Taste is listed in the $KIT_NAME marketplace, pinned by \`sha\` to the vetted commit). Adds the ui-references skill (animation and design sites, plus the rules for borrowing from them)
 and the shadcn and Motion MCP servers. \`project\` also writes a read-only \`ui-guide\` agent (claude --agent ui-guide)
 for questions about these skills. Enable it only in projects with a frontend.
@@ -449,7 +454,9 @@ MD
   cat > "$kit/plugins/kit-code/README.md" <<MD
 # kit-code
 Code pack for the $KIT_NAME marketplace. Adds the coder agent, a read-only correctness and security
-reviewer, and a haiku-model simplicity-reviewer that runs ponytail-review over the diff. Only the
+reviewer, and a haiku-model simplicity-reviewer that runs ponytail-review over the diff. Two more haiku agents
+keep routine work off the bigger models: runner (checks, tests, git status/diff, log digging; read-only) and
+coder-lite (mechanical edits only: renames, doc/copy/config tweaks, tests that copy a pattern). Only the
 ponytail reviewer is included, not the always-on ponytail ruleset, so nothing is injected every turn.
 The reviewer also gets the Semgrep MCP server (\`semgrep mcp\`, from the semgrep binary that \`setup\` installs).
 MD
@@ -516,7 +523,7 @@ MD
 ---
 name: design-auditor
 description: Read-only UI audit — accessibility, interaction states, Web Interface Guidelines, AI-slop patterns. Use after UI changes and before merging frontend work. Never edits files.
-model: sonnet
+model: haiku
 tools: Read, Glob, Grep, WebFetch, Skill, mcp__plugin_kit-core_playwright__*, mcp__plugin_kit-core_chrome-devtools__*
 skills:
   - web-design-guidelines
@@ -544,6 +551,34 @@ You implement one scoped task at a time.
 - If graphify-out/GRAPH_REPORT.md exists, read it before searching the codebase.
 - Use context7 for current library and framework docs instead of relying on memory. Use playwright to check a running page when your change affects one.
 - For React or Next.js code, follow the vercel-react-best-practices skill if it is installed (load it with the Skill tool).
+- Finish with: what changed, how you verified it (commands run and their result), and anything left undone.
+MD
+
+  cat > "$kit/plugins/kit-code/agents/runner.md" <<'MD'
+---
+name: runner
+description: Runs the project's checks and reports pass/fail — scripts/verify.sh, tests, linters, type checks — plus git status/diff --stat/log and log or transcript digging.
+model: haiku
+tools: Read, Glob, Grep, Bash
+---
+You run commands and report the result. You never create, edit or delete files.
+
+- Checks: scripts/verify.sh if it exists, otherwise the project's tests, linters and type checks. Run what you're asked, nothing extra.
+- Git: `git status`, `git diff --stat`, `git log` as asked. Log, transcript and bulk file digging: search first (Grep), read excerpts, not whole files.
+- Report in a few lines: pass or fail per command, failing test names, the first error lines, and `file:line` references. Never paste full output. If a command can't run, say why.
+MD
+
+  cat > "$kit/plugins/kit-code/agents/coder-lite.md" <<'MD'
+---
+name: coder-lite
+description: Mechanical edits only — renames, doc/copy/comment edits, config tweaks, and tests that copy an existing pattern, in one or two files with clear steps and no design decisions. For anything needing judgment use coder.
+model: haiku
+tools: Read, Write, Edit, Glob, Grep, Bash, Skill
+---
+You make small mechanical edits that come with clear steps.
+
+- Do exactly what the task says, in the files it names. Copy the existing pattern; don't invent one.
+- If the task needs a design decision, touches more than two files, or the steps don't match what you find, stop and report back what you found. Don't guess.
 - Finish with: what changed, how you verified it (commands run and their result), and anything left undone.
 MD
 
@@ -671,15 +706,15 @@ Personal Claude Code plugin marketplace, generated by agent-kit.sh.
 | Plugin | What it adds | Depends on |
 |---|---|---|
 | kit-core | find-skills (manual-only), orchestrator guard hook; playwright, chrome-devtools, context7 MCP servers | $METHOD_DEP |
-| kit-design | designer, design-auditor agents; shadcn, emil-design-eng, ui-references skills; shadcn, motion MCP servers | kit-core, hallmark@hallmark, design-and-refine@design-plugins, taste-skill |
-| kit-code | coder, reviewer, simplicity-reviewer agents; ponytail-review skill; semgrep MCP server | kit-core |
+| kit-design | designer (Sonnet), design-auditor (Haiku) agents; shadcn, emil-design-eng, ui-references skills; shadcn, motion MCP servers | kit-core, hallmark@hallmark, design-and-refine@design-plugins, taste-skill |
+| kit-code | coder, reviewer (Sonnet); runner, coder-lite, simplicity-reviewer (Haiku) agents; ponytail-review skill; semgrep MCP server | kit-core |
 
 Start a new project (git, GitHub repo, gates, kit, Basic Memory): \`./agent-kit.sh new <path>\`.
 Wire an existing project to the kit only (or update one): \`./agent-kit.sh project <path>\`.
-Leave a pack out with \`--no-design\` or \`--no-code\`.
+Leave a pack out with \`--no-design\` (or \`--no-ui\`) or \`--no-code\`.
 
-Sessions run as an orchestrator agent (Opus) that plans and delegates to coder/designer (Sonnet);
-a hook stops it changing files itself. Hands-on session instead: \`claude --agent solo\`.
+Sessions run as an orchestrator agent (model opusplan: Opus to plan, Sonnet otherwise) that delegates to
+coder/designer (Sonnet) and runner/coder-lite (Haiku); a hook stops it changing files itself. Hands-on session instead: \`claude --agent solo\`.
 
 ## Green light before every push
 
@@ -1039,13 +1074,13 @@ MD
 }
 
 cmd_new() {
-  [ $# -ge 1 ] || die "usage: $0 new <path> [--no-design] [--no-code] [--graph] [--no-memory] [--public] [--no-github] [--name NAME]"
+  [ $# -ge 1 ] || die "usage: $0 new <path> [--no-design|--no-ui] [--no-code] [--graph] [--no-memory] [--public] [--no-github] [--name NAME]"
   local proj="$1"; shift
   outside_kit "$proj"
   local p_args=() r_args=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      design|code|--no-design|--no-code|--graph|--no-memory) p_args+=("$1") ;;
+      design|code|--no-design|--no-ui|--no-code|--graph|--no-memory) p_args+=("$1") ;;
       --public|--no-github) r_args+=("$1") ;;
       --name) r_args+=("$1" "${2:-}"); shift ;;
       *) die "unknown option: $1" ;;
@@ -1353,6 +1388,20 @@ cmd_sync() {
   say "review with: git -C $kit diff --stat   then commit, push, and run: claude plugin marketplace update $KIT_NAME"
 }
 
+# the Explore override (Haiku); $1 is the command that wrote it, for the marker line
+explore_md() {
+  cat <<MD
+---
+name: Explore
+description: Fast read-only codebase search. Use to find files, symbols and how things fit together when a couple of Grep/Read calls won't do. Say how thorough to be. Returns conclusions with file:line references, not file dumps.
+model: haiku
+tools: Read, Glob, Grep, Bash
+---
+<!-- generated by agent-kit.sh $1; re-running it overwrites this file -->
+You search this codebase read-only and report what you found. Never create, edit or delete files; use Bash only for read-only commands (ls, find, git log, git grep). Read excerpts, not whole large files. Answer with conclusions and file:line references.
+MD
+}
+
 cmd_register() {
   local src="${1:-./agent-kit}" row name repo
   check_prereqs
@@ -1373,7 +1422,16 @@ cmd_register() {
     say "adding your kit marketplace from $src"
     claude plugin marketplace add "$src"
   fi
-  say "nothing is installed yet — run: $0 project <path> [--no-design] [--no-code]"
+  # the built-in Explore runs on Opus on a Pro login; a user-level agent of the same name replaces it everywhere.
+  # Only a file this script wrote is replaced (marker check), never one of your own.
+  local ex="$HOME/.claude/agents/Explore.md"
+  if { [ -e "$ex" ] || [ -L "$ex" ]; } && ! grep -q '^<!-- generated by agent-kit.sh' "$ex" 2>/dev/null; then
+    warn "$ex is yours (no agent-kit marker) — left alone; Explore may run on Opus outside kit projects"
+  else
+    mkdir -p "$HOME/.claude/agents"; explore_md register > "$ex"
+    say "Explore now runs on Haiku everywhere ($ex)"
+  fi
+  say "nothing is installed yet — run: $0 project <path> [--no-design|--no-ui] [--no-code]"
 }
 
 # ---------------------------------------------------------------- basic memory
@@ -1461,16 +1519,7 @@ write_session_agents() { # project-dir design code memory plan-new plan-big plan
   mkdir -p "$dir"
 
   # built-in Explore runs on Opus on a Pro login; a project agent with the same name replaces it
-  cat > "$dir/Explore.md" <<'MD'
----
-name: Explore
-description: Fast read-only codebase search. Use to find files, symbols and how things fit together when a couple of Grep/Read calls won't do. Say how thorough to be. Returns conclusions with file:line references, not file dumps.
-model: haiku
-tools: Read, Glob, Grep, Bash
----
-<!-- generated by agent-kit.sh project; re-running it overwrites this file -->
-You search this codebase read-only and report what you found. Never create, edit or delete files; use Bash only for read-only commands (ls, find, git log, git grep). Read excerpts, not whole large files. Answer with conclusions and file:line references.
-MD
+  explore_md project > "$dir/Explore.md"
 
   # an empty prompt keeps Claude Code's normal system prompt, and no tools: line keeps every tool
   cat > "$dir/solo.md" <<'MD'
@@ -1516,13 +1565,15 @@ import json, sys
 p = sys.argv[1]; s = json.load(open(p))
 if s.get("agent") == "orchestrator":
     del s["agent"]
+if s.get("model") == "opusplan":
+    del s["model"]
 json.dump(s, open(p, "w"), indent=2); open(p, "a").write("\n")
 PY
     return 0
   fi
 
-  spawn="kit-code:coder, kit-code:reviewer, kit-code:simplicity-reviewer, Explore"
-  [ "$design" = 1 ] && spawn="kit-code:coder, kit-design:designer, kit-design:design-auditor, kit-code:reviewer, kit-code:simplicity-reviewer, Explore"
+  spawn="kit-code:coder, kit-code:coder-lite, kit-code:runner, kit-code:reviewer, kit-code:simplicity-reviewer, Explore"
+  [ "$design" = 1 ] && spawn="kit-code:coder, kit-code:coder-lite, kit-code:runner, kit-design:designer, kit-design:design-auditor, kit-code:reviewer, kit-code:simplicity-reviewer, Explore"
   tools="Agent($spawn), Read, Glob, Grep, Bash, Skill, ToolSearch, AskUserQuestion, TaskCreate, TaskUpdate, TaskList, TaskGet, WebFetch, WebSearch"
   [ "$memory" = 1 ] && tools+=", mcp__basic-memory__*"
 
@@ -1531,23 +1582,25 @@ PY
 ---
 name: orchestrator
 description: Main-session agent for this project. Plans, delegates to the kit's agents, checks their work and reports to the user. Never changes files itself.
-model: opus
+effort: medium
 tools: $tools
 ---
 <!-- generated by agent-kit.sh project; re-running it overwrites this file -->
 You are the lead engineer in a Claude Code session in this project. You plan, delegate, check and report. You do not change files yourself: you have no Edit or Write tool, and a hook blocks Bash commands that write files. Every change to the repo goes through an agent.
 
 ## Your agents (Agent tool; use these exact subagent_type values)
-- \`kit-code:coder\` (Sonnet): code, tests, refactors, config, scripts, docs files.
+- \`kit-code:coder\` (Sonnet): real code and tests
+- \`kit-code:coder-lite\` (Haiku): mechanical edits
+- \`kit-code:runner\` (Haiku, read-only): checks, tests, git, logs
 MD
     [ "$design" = 1 ] && cat <<'MD'
-- `kit-design:designer` (Sonnet): anything a user sees. Pages, screens, components, layout, styling, on-screen copy, motion.
-- `kit-design:design-auditor` (Sonnet, read-only): audits UI after every UI change.
+- `kit-design:designer` (Sonnet): anything a user sees
+- `kit-design:design-auditor` (Haiku, read-only): UI audit
 MD
     cat <<MD
-- \`kit-code:reviewer\` (Sonnet, read-only): correctness and security review of the diff.
-- \`kit-code:simplicity-reviewer\` (Haiku, read-only): over-engineering review of the diff.
-- \`Explore\` (Haiku, read-only): codebase search when a couple of Grep/Read calls won't do.
+- \`kit-code:reviewer\` (Sonnet, read-only): correctness and security
+- \`kit-code:simplicity-reviewer\` (Haiku, read-only): over-engineering
+- \`Explore\` (Haiku, read-only): codebase search beyond a couple of Grep/Read calls
 
 ## How you work
 - Understand. Read just enough (Read, Grep, Glob, or Explore) to plan. Ask the user only for decisions that are theirs to make. For a new feature suggest $plan_new first; for a big one, $plan_big.
@@ -1559,30 +1612,34 @@ MD
 MD
     fi
     cat <<'MD'
-- Dispatch. Independent tasks go out in parallel in one message. Tasks that touch the same files go one after another. Agents don't see this conversation, so each prompt is short but complete: the goal, the files or area, constraints, how to verify, and what to report back.
+- Dispatch. Mechanical edits go to coder-lite, real code to the coder; checks, test runs, bulk reads and log digging go to the runner, not your own Bash. Independent tasks go out in parallel in one message. Tasks that touch the same files go one after another. Agents don't see this conversation, so each prompt is short but complete: the goal, the files or area, constraints, how to verify, and what to report back.
 MD
     [ "$design" = 1 ] && cat <<'MD'
 - After any UI change, run the design-auditor and send its punch list back to the designer. The designer and coder can drive a browser: give the design-auditor the dev server URL so it audits the rendered page.
 MD
     cat <<'MD'
-- Before calling work done or committing, run the reviewer and simplicity-reviewer in parallel and send blockers back to the agent that wrote the code. Run the project's checks yourself with Bash (scripts/verify.sh if it exists, otherwise the tests) and report the real result.
+- Before calling work done or committing, run the reviewer and simplicity-reviewer in parallel and send blockers back to the agent that wrote the code. Have the runner run the project's checks (scripts/verify.sh if it exists, otherwise the tests) and report the real result.
 - Report briefly: what changed, what was verified and how, and what's left.
 
 ## Rules
 - Don't change files yourself, not even a one-line fix. Delegate it. If the user wants to work hands-on, tell them to restart with `claude --agent solo`.
-- Git and gh are yours: status, diff, branch, commit, push, PRs. Commit or push only when the user asks. Never force-push and never skip a gate (--no-verify, SKIP_REVIEW, SKIP_VERIFY) unless the user says so.
+- Never use `general-purpose`.
+- Git commit, push, branch and PRs (gh) are yours, and a quick one-line `git status`. Commit or push only when the user asks. Never force-push and never skip a gate (--no-verify, SKIP_REVIEW, SKIP_VERIFY) unless the user says so.
 - Never repeat secrets from .env or similar files.
 - Keep your own context small. Let agents read big files and return summaries.
 - Never install plugins or skills on your own; suggest them and wait. Vet a skill or plugin before suggesting it: run `agent-kit.sh vet <owner/repo>` from the kit folder (or ask the user to). Never suggest one with a high-severity finding.
 - Write for the user in plain, short sentences. Use file_path:line references.
 MD
-    printf -- '- Between unrelated tasks, suggest %s and then /clear.\n' "$plan_handoff"
+    printf -- '- Between unrelated tasks, suggest %s and then /clear. When a session gets long (roughly over 120k tokens), suggest /compact, or %s and then /clear.\n' "$plan_handoff" "$plan_handoff"
   } > "$dir/orchestrator.md"
 
   python3 - "$proj/.claude/settings.json" <<'PY'
 import json, sys
 p = sys.argv[1]; s = json.load(open(p))
 s["agent"] = "orchestrator"
+# Opus only in plan mode, Sonnet otherwise; agent frontmatter can't take this alias. Never overwrite the user's own choice.
+if s.setdefault("model", "opusplan") != "opusplan":
+    print("   note: .claude/settings.json already sets model %r; left as is (the kit suggests opusplan)" % s["model"])
 json.dump(s, open(p, "w"), indent=2); open(p, "a").write("\n")
 PY
 }
@@ -1619,14 +1676,14 @@ has_any_dep() {
 }
 
 cmd_project() {
-  [ $# -ge 1 ] || die "usage: $0 project <path> [--no-design] [--no-code] [--graph] [--no-memory]"
+  [ $# -ge 1 ] || die "usage: $0 project <path> [--no-design|--no-ui] [--no-code] [--graph] [--no-memory]"
   local proj="$1"; shift
   outside_kit "$proj"
   local packs=("kit-core") design=1 code=1 graph=0 memory=1 a
   for a in "$@"; do
     case "$a" in
       design|code) ;;   # the old opt-in words; every pack is on by default now
-      --no-design) design=0 ;;
+      --no-design|--no-ui) design=0 ;;   # kit-design pulls in hallmark and design-and-refine, so they go too
       --no-code)   code=0 ;;
       --graph) graph=1 ;;
       --no-memory) memory=0 ;;
@@ -1780,6 +1837,49 @@ PY2
   if [ "$code" = 1 ]; then say "sessions there start as the orchestrator; for a hands-on session run: claude --agent solo"; fi
 }
 
+cmd_usage() { # [--since YYYY-MM-DD] — rough spend from local transcripts; list prices, so an estimate only
+  local since="" msg="usage: $0 usage [--since YYYY-MM-DD]"
+  if [ $# -eq 2 ] && [ "$1" = --since ] && [[ "$2" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then since="$2"
+  elif [ $# -ne 0 ]; then die "$msg"; fi
+  python3 -I - "$HOME/.claude/projects" "$since" <<'PY'
+import collections, glob, json, os, sys
+root, since = sys.argv[1], sys.argv[2]
+PRICE = {"opus": (5, 25, 6.25, 0.5), "sonnet": (3, 15, 3.75, 0.3), "haiku": (1, 5, 1.25, 0.1)}  # $/MTok: in, out, cache write, cache read
+KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+seen, by_model, by_agent = set(), collections.defaultdict(lambda: [0] * 4), collections.defaultdict(lambda: [0] * 4)
+def cost(model, t): return sum(n * p for n, p in zip(t, PRICE.get(model, (0,) * 4))) / 1e6
+for path in glob.glob(os.path.join(root, "**", "*.jsonl"), recursive=True):
+    agent = "main"
+    if os.sep + "subagents" + os.sep in path:
+        try: agent = json.load(open(path[:-6] + ".meta.json")).get("agentType") or "subagent"
+        except (OSError, ValueError): agent = "subagent"
+    for line in open(path, errors="ignore"):
+        try: e = json.loads(line)
+        except ValueError: continue
+        m = e.get("message") if isinstance(e, dict) else None
+        if not isinstance(m, dict) or e.get("type") != "assistant" or not isinstance(m.get("usage"), dict):
+            continue
+        if since and str(e.get("timestamp", ""))[:10] < since: continue
+        if m.get("id"):
+            if m["id"] in seen: continue
+            seen.add(m["id"])
+        fam = next((f for f in PRICE if f in str(m.get("model", ""))), None)
+        if not fam: continue   # <synthetic> and unknown models
+        t = [m["usage"].get(k) or 0 for k in KEYS]
+        for table, key in ((by_model, fam), (by_agent, (agent, fam))):
+            table[key] = [a + b for a, b in zip(table[key], t)]
+def show(title, rows):
+    print(f"\n{title:<34}{'input':>11}{'output':>11}{'cache wr':>13}{'cache rd':>14}{'est $':>10}")
+    for name, (fam, t) in rows: print(f"{name:<34}{t[0]:>11,}{t[1]:>11,}{t[2]:>13,}{t[3]:>14,}{cost(fam, t):>10.2f}")
+def by_cost(rows): return sorted(rows, key=lambda r: -cost(*r[1]))
+families = [(f, (f, t)) for f, t in by_model.items()]
+show("model family", by_cost(families))
+print(f"{'total':<34}{'':>49}{sum(cost(*r[1]) for r in families):>20.2f}")
+show("agent type (model)", by_cost([(f"{a} ({f})", (f, t)) for (a, f), t in by_agent.items()]))
+print(f"\nlist prices per MTok, deduped by message id{', since ' + since if since else ''}; an estimate, not your bill (Pro/Max is a flat plan)")
+PY
+}
+
 cmd_doctor() {
   local scan=0
   [ "${1:-}" = "--scan" ] && scan=1
@@ -1867,6 +1967,7 @@ main() {
     new) cmd_new "$@" ;;
     doctor) cmd_doctor "$@" ;;
     vet) cmd_vet "$@" ;;
+    usage) cmd_usage "$@" ;;
     *) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0" ;;
   esac
 }

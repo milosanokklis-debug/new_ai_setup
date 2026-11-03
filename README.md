@@ -3,11 +3,33 @@
 My personal Claude Code setup. One script, `agent-kit.sh`, turns any folder into a project that:
 
 - runs entirely on my **Claude Pro** login (no API key, no other AI accounts)
-- runs every session as an **orchestrator** (Opus) that plans and hands the work to cheaper **subagents** (Sonnet/Haiku). It can't edit files itself, so it has to delegate
+- runs every session as an **orchestrator** (model `opusplan`: Opus only in plan mode, Sonnet otherwise) that hands the work to cheaper **subagents** (Sonnet/Haiku). It can't edit files itself, so it has to delegate
 - **remembers** decisions between sessions with Basic Memory
 - can't push code that leaks a secret, fails its tests, or fails an **independent review**
 
 This repo is also a Claude Code plugin marketplace. The `plugins/` folder holds the three packs the script installs.
+
+---
+
+## What's new in 0.6
+
+- **Vercel agent skills** (`vercel-labs/agent-skills`, pinned). React skills are installed for projects that depend on `react` or `next`; `writing-guidelines` is fetched into every project and used by the reviewer. Left out: vercel-optimize, deploy-to-vercel, vercel-cli-with-tokens. Pin details are in [VENDORED.md](VENDORED.md) and [SECURITY-REVIEW.md](SECURITY-REVIEW.md).
+
+---
+
+## What's new in 0.5
+
+Less Opus, more Sonnet and Haiku. In my transcripts the Opus orchestrator was about half the spend, mostly re-reading context each turn and running routine Bash.
+
+- **Orchestrator on `opusplan`.** The agent file has no `model:` line: Claude Code's subagent docs list only `sonnet`, `opus`, `haiku`, `fable`, a full model ID or `inherit` for agent frontmatter, so `project` writes `"model": "opusplan"` into the project's `.claude/settings.json` instead (Opus in plan mode, Sonnet otherwise). The agent file does set `effort: medium` (agent frontmatter supports `effort`). Docs: https://code.claude.com/docs/en/sub-agents and https://code.claude.com/docs/en/model-config.
+- **`kit-code:runner` (Haiku, read-only)** runs checks, tests and git status/diff/log and digs through logs, reporting pass/fail with failing test names and `file:line`, never full output.
+- **`kit-code:coder-lite` (Haiku)** does mechanical edits only (renames, doc/copy/config tweaks, tests that copy a pattern) and stops to report if the task needs judgment.
+- **`design-auditor` moved to Haiku.**
+- **Haiku `Explore` at user level.** `register` writes `~/.claude/agents/Explore.md` unless you already have your own (no agent-kit marker; a dangling symlink counts as yours).
+- **`--no-ui`** is an alias for `--no-design`: no kit-design, Hallmark, Design and Refine, designer or design-auditor. The default is unchanged.
+- **`./agent-kit.sh usage [--since YYYY-MM-DD]`** prints tokens and estimated dollars per model family and per agent type from `~/.claude/projects`.
+- `project` sets `"model": "opusplan"` only if `.claude/settings.json` has no `model` yet; your own choice is left alone.
+- The orchestrator suggests `/compact` or a handoff when a session passes about 120k tokens. To pick this up in an existing project, re-run `./agent-kit.sh project <path>`.
 
 ---
 
@@ -23,7 +45,6 @@ This repo is also a Claude Code plugin marketplace. The `plugins/` folder holds 
 - **Design skills.** Taste is part of `kit-design`. The GSAP skills are added only when the project depends on `gsap`. A new `ui-references` skill lists animation and design reference sites and the rules for borrowing from them. Impeccable is left out on purpose: its always-on hooks download and run a native binary. Figma and frontend-design were not added.
 - **`claude --agent ui-guide`** is a read-only session for questions about the UI skills. Try "Which skill should I use to add a page-transition animation?" or "What does the Taste skill say about spacing, and does this component follow it?".
 - **Security vetting.** `./agent-kit.sh vet <path|owner/repo>` scans a skill or plugin before it goes in. [SECURITY-REVIEW.md](SECURITY-REVIEW.md) records what was checked. Upstream plugins are pinned by `sha` through this kit's own `marketplace.json`.
-- **0.5.0: Vercel agent skills** (`vercel-labs/agent-skills`, pinned). React skills are installed for projects that depend on `react` or `next`; `writing-guidelines` is fetched into every project and used by the reviewer. Left out: vercel-optimize, deploy-to-vercel, vercel-cli-with-tokens. Pin details are in [VENDORED.md](VENDORED.md) and [SECURITY-REVIEW.md](SECURITY-REVIEW.md).
 - **0.4.1 fixes.** The shadcn server failed with `sh: 1: shadcn: not found`: a first-run npx download that was cut off left a half-installed cache entry with no command in it. A slow first download could also time out context7. `setup` now removes broken entries and pre-fetches all pinned npx servers.
 
 ---
@@ -35,21 +56,23 @@ flowchart TB
     me([Me]) --> main
 
     subgraph CC["Claude Code · Pro login"]
-        main["Main session = orchestrator agent<br/>Opus · plans and delegates<br/>can't edit files"]
+        main["Main session = orchestrator agent<br/>opusplan · plans and delegates<br/>can't edit files"]
 
         subgraph design["kit-design"]
             designer["designer<br/>Sonnet · builds UI"]
-            auditor["design-auditor<br/>Sonnet · read-only"]
+            auditor["design-auditor<br/>Haiku · read-only"]
         end
 
         subgraph code["kit-code"]
             coder["coder<br/>Sonnet · writes code + tests"]
             reviewer["reviewer<br/>Sonnet · read-only"]
             simple["simplicity-reviewer<br/>Haiku · read-only"]
+            runner["runner<br/>Haiku · checks, git, logs · read-only"]
+            lite["coder-lite<br/>Haiku · mechanical edits"]
         end
 
         explore["Explore<br/>Haiku · read-only search"]
-        main --> designer & auditor & coder & reviewer & simple & explore
+        main --> designer & auditor & coder & lite & runner & reviewer & simple & explore
     end
 
     mcp["MCP servers (per plugin .mcp.json)<br/>playwright · chrome-devtools · context7<br/>shadcn · motion · semgrep"] -.-> designer & auditor & coder & reviewer
@@ -147,7 +170,7 @@ Having lots of projects doesn't cost context. Claude Code reads files only when 
 ./agent-kit.sh new ~/code/my-app --no-github          # local only, push later with: ./agent-kit.sh repo ~/code/my-app
 ```
 
-Every pack goes in by default. I learned this the hard way: my first website project only got `kit-core`, so the designer agents didn't exist and nothing touched the UI properly. Add `--no-design` only for projects with truly no UI, and `--no-code` only for projects with no code (that also turns off the orchestrator, since there's no coder to delegate to).
+Every pack goes in by default. I learned this the hard way: my first website project only got `kit-core`, so the designer agents didn't exist and nothing touched the UI properly. Add `--no-design` (or `--no-ui`) only for projects with truly no UI, and `--no-code` only for projects with no code (that also turns off the orchestrator, since there's no coder to delegate to).
 
 ```mermaid
 flowchart LR
@@ -181,7 +204,7 @@ To add the kit to a project that already exists, use `./agent-kit.sh project <pa
 ```mermaid
 sequenceDiagram
     actor Me
-    participant M as Orchestrator (Opus)
+    participant M as Orchestrator (opusplan)
     participant BM as Basic Memory
     participant A as Subagents
     participant G as Push gate
@@ -201,7 +224,7 @@ sequenceDiagram
 ```
 
 - **Start a feature** with `/zsl:grill-me` (small) or `/zsl:to-prd` (big). Claude asks questions until the plan is clear.
-- **The main session delegates, always.** It runs as the `orchestrator` agent (set by `"agent": "orchestrator"` in `.claude/settings.json`). It has no Edit/Write tools, can only spawn the kit's agents (never the built-in general-purpose one, which would run on Opus), and a hook in `kit-core` blocks Bash commands that write files (`sed -i`, `>` redirects, `tee`, Python/Node scripts that write). Anything users see goes to the designer, and the design-auditor checks it afterwards.
+- **The main session delegates, always.** It runs as the `orchestrator` agent (set by `"agent": "orchestrator"` in `.claude/settings.json`). It has no Edit/Write tools, can only spawn the kit's agents (never the built-in general-purpose one), and a hook in `kit-core` blocks Bash commands that write files (`sed -i`, `>` redirects, `tee`, Python/Node scripts that write). Anything users see goes to the designer, and the design-auditor checks it afterwards.
 - **Small fix, don't want the ceremony?** `claude --agent solo` gives a normal hands-on session with every tool. The guard only applies to the orchestrator.
 - **Between tasks:** `/zsl:handoff`, then `/clear`. My usage panel said most of my usage came from not clearing between tasks.
 - **Never let Claude install skills on its own.** `find-skills` is manual-only. Use it to shop, then add the good ones to the kit.
@@ -336,8 +359,10 @@ My Pro usage is shared between the Claude app and Claude Code, and every subagen
 | Install only the packs a project needs | Every installed skill's description loads every turn. |
 | Know what the MCP servers cost | Each server's tool list loads when its agent starts, so only agents that name a server pay for it (the orchestrator pays for none). `./agent-kit.sh doctor` lists the servers. Playwright and Chrome DevTools run headless. |
 | Run `./agent-kit.sh doctor` now and then | Shows skills and tokens per plugin, plus duplicate skill names. The kit is about 45 skills / ~4k tokens a turn, plus the Basic Memory plugin. |
-| Let subagents do the work | The orchestrator forces this: Opus only plans and reviews, Sonnet/Haiku write the code. |
-| `/zsl:handoff`, then `/clear` | Long sessions get expensive and worse. |
+| Let subagents do the work | The orchestrator forces this. Its model is `opusplan`, so normal turns run on Sonnet, and it sends routine checks and edits to the Haiku `runner` and `coder-lite`. |
+| Haiku Explore everywhere | The built-in Explore can run on Opus; `register` installs a Haiku one at user level, and `project` writes one per project. |
+| Check where the spend goes | `./agent-kit.sh usage` shows the Opus share. |
+| `/zsl:handoff`, then `/clear` | Long sessions get expensive and worse. The orchestrator suggests `/compact` or a handoff once a session passes roughly 120k tokens. |
 | `REVIEW_MODEL=haiku` | Cheaper push reviews. |
 
 Before adding any new skill or plugin, run `./agent-kit.sh vet <path|owner/repo>`, which scans it without running anything and exits non-zero on a high-severity finding or any scan that could not run (`NOT SCANNED`); `sync` runs it on every vendored skill.
@@ -369,15 +394,16 @@ The packs pull skills from a few third-party GitHub marketplaces (Addy Osmani, H
 | Command | Does |
 |---|---|
 | `./agent-kit.sh setup` | Install every tool the kit needs (safe to re-run) |
-| `./agent-kit.sh new <path> [--no-design] [--no-code]` | Everything: repo, gates, packs, Basic Memory, GitHub. Installs missing tools first |
-| `./agent-kit.sh project <path> [--no-design] [--no-code]` | Packs, orchestrator, AGENTS.md/CLAUDE.md and Basic Memory only. Re-run it to update an older project |
+| `./agent-kit.sh new <path> [--no-design\|--no-ui] [--no-code]` | Everything: repo, gates, packs, Basic Memory, GitHub. Installs missing tools first |
+| `./agent-kit.sh project <path> [--no-design\|--no-ui] [--no-code]` | Packs, orchestrator, AGENTS.md/CLAUDE.md and Basic Memory only. Re-run it to update an older project. `--no-ui` is an alias for `--no-design` |
 | `./agent-kit.sh repo <path>` | Gates and GitHub only |
 | `./agent-kit.sh doctor [--scan]` | What's installed, which MCP servers the kit ships, and what the skills cost per turn |
+| `./agent-kit.sh usage [--since YYYY-MM-DD]` | Tokens and estimated $ per model family and agent type, from `~/.claude/projects` (list prices; an estimate, not your bill) |
 | `./agent-kit.sh vet <path\|owner/repo>` | Security-check a skill or plugin before installing it; non-zero exit on high-severity findings |
 | `./tests/skills.sh` | Check every kit skill has valid name/description frontmatter; own skills must stay under 500 lines |
 | `./tests/vet.sh` | Check that `vet` fails a bad fixture (zero-width space, `curl \| sh`) and passes a clean one |
 | `./agent-kit.sh sync .` | Re-pull vendored skills from upstream (see `VENDORED.md`), then vet each one |
-| `./agent-kit.sh register .` | Add the marketplaces to Claude Code (once per machine) |
+| `./agent-kit.sh register .` | Add the marketplaces to Claude Code (once per machine), and install the Haiku `Explore` agent in `~/.claude/agents/` (skipped if you have your own, i.e. no agent-kit marker) |
 
 Flags for `new`/`project`: `--no-memory` (skip Basic Memory), `--graph` (code graph for big repos). Flags for `new`/`repo`: `--public`, `--no-github`, `--name NAME`.
 Environment variables: `KIT_REPO`, `REVIEW_MODEL`, `BM_HOME`, `METHOD=agent-skills|superpowers`, `PLANNING=zsl|mattpocock` (default: zsl when that plugin is loaded).
