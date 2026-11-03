@@ -11,6 +11,22 @@ This repo is also a Claude Code plugin marketplace. The `plugins/` folder holds 
 
 ---
 
+## What's new in 0.4
+
+- **Six MCP servers**, each pinned to a version (see [SECURITY-REVIEW.md](SECURITY-REVIEW.md) for the pins) and shipped in its plugin's `.mcp.json`. An agent only gets a server if its `tools:` line names it.
+  - `playwright` and `chrome-devtools`: designer, design-auditor (coder gets playwright only).
+  - `context7` (current library docs): designer, coder, reviewer.
+  - `shadcn`: designer. `motion`: designer. Motion is a hosted service that can't be pinned, so its output is untrusted and nothing it suggests gets installed automatically.
+  - `semgrep` (`semgrep mcp`): reviewer.
+  - `ui-guide` gets shadcn, motion, context7, playwright and chrome-devtools. The orchestrator gets none.
+- **Code intelligence.** `typescript-lsp` and `pyright-lsp` are installed per project when it has a `package.json`/`tsconfig.json` or `requirements.txt`/`pyproject.toml`.
+- **Design skills.** Taste is part of `kit-design`. The GSAP skills are added only when the project depends on `gsap`. A new `ui-references` skill lists animation and design reference sites and the rules for borrowing from them. Impeccable is left out on purpose: its always-on hooks download and run a native binary. Figma and frontend-design were not added.
+- **`claude --agent ui-guide`** is a read-only session for questions about the UI skills. Try "Which skill should I use to add a page-transition animation?" or "What does the Taste skill say about spacing, and does this component follow it?".
+- **Security vetting.** `./agent-kit.sh vet <path|owner/repo>` scans a skill or plugin before it goes in. [SECURITY-REVIEW.md](SECURITY-REVIEW.md) records what was checked. Upstream plugins are pinned by `sha` through this kit's own `marketplace.json`.
+- **0.4.1 fixes.** The shadcn server failed with `sh: 1: shadcn: not found`: a first-run npx download that was cut off left a half-installed cache entry with no command in it. A slow first download could also time out context7. `setup` now removes broken entries and pre-fetches all pinned npx servers.
+
+---
+
 ## How it fits together
 
 ```mermaid
@@ -69,7 +85,7 @@ flowchart TB
    ./agent-kit.sh setup
    ```
 
-   `setup` also installs semgrep, the TypeScript and Python language servers (npm versions pinned in `agent-kit.sh`, installed with `--ignore-scripts`) and the Chromium for the pinned Playwright MCP server, and warns if Chrome is missing or Node is older than 20.19.
+   `setup` also installs semgrep, the TypeScript and Python language servers (npm versions pinned in `agent-kit.sh`, installed with `--ignore-scripts`), the Chromium for the pinned Playwright MCP server, and pre-fetches the pinned npx MCP servers (playwright, chrome-devtools, context7, shadcn) so the first session doesn't time out. It warns if Chrome is missing or Node is older than 20.19.
 
    On a Mac without Homebrew, `setup` stops and prints the one-line Homebrew install command. If it says to add `~/.local/bin` to my PATH, I add that line to `~/.zshrc` and open a new terminal.
 
@@ -338,6 +354,7 @@ The packs pull skills from a few third-party GitHub marketplaces (Addy Osmani, H
 | Claude doesn't use my agents or rules | Start it inside the project folder, not the kit folder |
 | Push stopped: "reviewer didn't return a verdict" | Run `claude`, type `/status`: signed in? out of Pro usage? Log in `.git/kit-review/*.err` |
 | Usage billed to the API | `unset ANTHROPIC_API_KEY`, then `/status` |
+| An MCP server failed to connect on first run | `./agent-kit.sh setup` (pre-fetches the servers, repairs a broken npx cache), or retry in `/mcp` |
 | Basic Memory tools or briefing missing | Approve the server when asked, then `/basic-memory:bm-status`. Re-run `./agent-kit.sh setup` if `basic-memory` isn't found |
 | "couldn't turn on branch protection" | Private repo on a free plan. Make it public or skip it. The hooks still work. |
 | A plugin change isn't showing up | `claude plugin marketplace update agent-kit`, then restart Claude Code |
@@ -350,7 +367,7 @@ The packs pull skills from a few third-party GitHub marketplaces (Addy Osmani, H
 
 | Command | Does |
 |---|---|
-| `./agent-kit.sh setup` | Install every tool the kit needs, plus semgrep, language servers and Playwright Chromium (once per machine; safe to re-run) |
+| `./agent-kit.sh setup` | Install every tool the kit needs (safe to re-run) |
 | `./agent-kit.sh new <path> [--no-design] [--no-code]` | Everything: repo, gates, packs, Basic Memory, GitHub. Installs missing tools first |
 | `./agent-kit.sh project <path> [--no-design] [--no-code]` | Packs, orchestrator, AGENTS.md/CLAUDE.md and Basic Memory only. Re-run it to update an older project |
 | `./agent-kit.sh repo <path>` | Gates and GitHub only |

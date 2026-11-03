@@ -34,7 +34,7 @@ set -euo pipefail
 
 KIT_NAME="${KIT_NAME:-agent-kit}"
 METHOD="${METHOD:-agent-skills}"
-KIT_VERSION="0.4.0"
+KIT_VERSION="0.4.1"
 GITLEAKS_VERSION="${GITLEAKS_VERSION:-8.30.1}"
 SEMGREP_VERSION="1.183.0"   # pinned for setup, vet and the reviewer's MCP server; update on purpose
 # not ~/basic-memory: Basic Memory's own default project lives there, and projects can't be nested
@@ -187,6 +187,9 @@ ensure_tools() { # tool... — installs whatever is missing or too old; returns 
 
 # The MCP servers are launched with npx, and the pinned ones need Node 20.19 or newer (apt's nodejs is often older).
 PLAYWRIGHT_MCP="@playwright/mcp@0.0.84"
+CHROME_DEVTOOLS_MCP="chrome-devtools-mcp@1.12.0"
+CONTEXT7_MCP="@upstash/context7-mcp@4.4.4"
+SHADCN_MCP="shadcn@4.23.0"
 node_ok() {
   local v maj min; v="$(node -v 2>/dev/null)" || return 1
   v="${v#v}"; maj="${v%%.*}"; min="${v#*.}"; min="${min%%.*}"
@@ -225,6 +228,21 @@ setup_code_tools() {
   fi
 }
 
+# Pre-fetch the pinned npx MCP servers (a cut-off first download leaves a cache entry with no bin link and times out the connect).
+prefetch_mcp_packages() {
+  echo; say "pre-fetching MCP server packages (npx cache)"
+  have npx || { warn "npx missing: MCP servers will download on first use"; return 0; }
+  local pin spec bin d name ver out
+  for pin in "$PLAYWRIGHT_MCP|playwright-mcp" "$CHROME_DEVTOOLS_MCP|chrome-devtools-mcp" "$CONTEXT7_MCP|context7-mcp" "$SHADCN_MCP|shadcn"; do
+    spec="${pin%%|*}"; bin="${pin##*|}"; name="${spec%@*}"; ver="${spec##*@}"
+    for d in "$HOME"/.npm/_npx/*/; do   # broken entry: depends on exactly this pin but has no bin link
+      if [ -f "$d/package.json" ] && grep -Eq "\"$name\": *\"\^?$ver\"" "$d/package.json" && [ ! -e "$d/node_modules/.bin/$bin" ]; then rm -rf "$d"; fi
+    done
+    out="$(npx -y -p "$spec" -- sh -c "command -v $bin" 2>&1)" && echo "   $spec: ready" \
+      || { warn "couldn't fetch $spec (it will download on first use; retry with /mcp):"; printf '%s\n' "$out" | tail -n 3 >&2; }
+  done
+}
+
 cmd_setup() {
   ORIG_PATH="$PATH"
   on_path_local_bin
@@ -257,6 +275,8 @@ cmd_setup() {
   fi
 
   setup_code_tools
+  echo; say "close running Claude Code sessions first; an MCP server in use may break until restart"
+  prefetch_mcp_packages
 
   echo; say "sign-ins"
   if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
@@ -374,12 +394,12 @@ JSON
   write_json "$kit/plugins/kit-core/.mcp.json" '{
     "mcpServers": {
       "playwright": { "command": "npx", "args": ["-y", "'"$PLAYWRIGHT_MCP"'", "--headless", "--isolated", "--browser", "chromium"] },
-      "chrome-devtools": { "command": "npx", "args": ["-y", "chrome-devtools-mcp@1.12.0", "--headless", "--isolated", "--no-usage-statistics", "--no-performance-crux"],
+      "chrome-devtools": { "command": "npx", "args": ["-y", "'"$CHROME_DEVTOOLS_MCP"'", "--headless", "--isolated", "--no-usage-statistics", "--no-performance-crux"],
         "env": { "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS": "1" } },
-      "context7": { "command": "npx", "args": ["-y", "@upstash/context7-mcp@4.4.4"] } } }'
+      "context7": { "command": "npx", "args": ["-y", "'"$CONTEXT7_MCP"'"] } } }'
   write_json "$kit/plugins/kit-design/.mcp.json" '{
     "mcpServers": {
-      "shadcn": { "command": "npx", "args": ["-y", "shadcn@4.23.0", "mcp"] },
+      "shadcn": { "command": "npx", "args": ["-y", "'"$SHADCN_MCP"'", "mcp"] },
       "motion": { "type": "http", "url": "https://mcp.motion.dev" } } }'
   # semgrep's own binary carries the MCP server (the standalone semgrep-mcp package is deprecated); `setup` installs it
   write_json "$kit/plugins/kit-code/.mcp.json" '{
