@@ -17,6 +17,10 @@
 #                                                     --no-ui leaves out the UI pack: kit-design, hallmark,
 #                                                     design-and-refine, designer, design-auditor;
 #                                                     re-run it any time to update an existing project)
+#   ./agent-kit.sh self     [--no-design|--no-ui] [--no-code] [--no-memory]
+#                                                     wire the kit repo to itself, so its orchestrator can edit the
+#                                                     kit: points the kit marketplace at this checkout, then runs
+#                                                     `project` here. Re-run after changing plugins/ to reload them
 #   ./agent-kit.sh repo     <path> [--public] [--no-github] [--name NAME]
 #                                                     git + GitHub repo with green-light gates (gitleaks,
 #                                                     verify, independent reviewer) and branch protection
@@ -99,9 +103,15 @@ need() { command -v "$1" >/dev/null 2>&1 || die "missing '$1' — $2"; }
 
 KIT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-outside_kit() { # project-path — projects must not live inside the kit repo
+is_kit_dir() { # path — true when path is the kit repo's own root (not a folder inside it)
+  [ "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1")" = "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$KIT_DIR")" ]
+}
+
+outside_kit() { # project-path — projects must not live inside the kit repo (only `self` may wire the kit root)
   local real
   real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1")"
+  if [ "${KIT_SELF:-0}" = 1 ] && is_kit_dir "$real"; then return 0; fi
+  is_kit_dir "$real" && die "to wire the kit to itself run: $0 self"
   case "$real/" in
     "$KIT_DIR"/*) die "keep projects outside the kit folder ($KIT_DIR) — e.g. $0 new ~/code/$(basename "$real")" ;;
   esac
@@ -1581,6 +1591,8 @@ kit_block() { # project-dir design code memory orchestrator ui-guide plan-new pl
   [ "$design" = 1 ] && [ "$uig" = 1 ] && \
     printf -- '- Questions about the UI skills (which one, what it says, how it fits this code) → `claude --agent ui-guide` (read-only).\n'
   printf -- '- Never install skills on your own; vet them first (`agent-kit.sh vet <owner/repo>`), suggest them and wait (find-skills is manual-only).\n'
+  is_kit_dir "$proj" && \
+    printf -- '- This repo is the kit itself. After a change to plugins/ or .claude-plugin/, run `/reload-plugins` (or restart Claude Code); re-run `./agent-kit.sh self` when the agent files or packs change; changing a plugin also needs a KIT_VERSION bump (tests/version-bump.sh).\n'
   printf '<!-- agent-kit:end -->'
 }
 
@@ -1731,6 +1743,16 @@ MD
 - Write for the user in plain, short sentences. Use file_path:line references.
 MD
     printf -- '- Between unrelated tasks, suggest %s and then /clear. When a session gets long (roughly over 120k tokens), suggest /compact, or %s and then /clear.\n' "$plan_handoff" "$plan_handoff"
+    if is_kit_dir "$proj"; then cat <<'MD'
+
+## This repo is the kit
+The plugins your agents run come from this checkout's plugins/ (the kit marketplace points here). So you can improve the kit with your own agents:
+- Changes to agent-kit.sh, plugins/, .claude-plugin/marketplace.json and tests/ go to the coder like any other code. A change under plugins/ or to marketplace.json also needs KIT_VERSION in agent-kit.sh and every local plugin version bumped to match; have the runner run `tests/version-bump.sh`, `bash -n agent-kit.sh tests/*.sh`, `tests/skills.sh` and `tests/contract.sh --cases 8,10,11,12`.
+- After those changes pass review and checks, you may run `./agent-kit.sh self` yourself (it is the one install command you may run unasked): it reloads this repo's own packs from the checkout and rewrites the files under .claude/agents. Then tell the user to run /reload-plugins or restart Claude Code: plugins load in place from this checkout, and agents load when a session starts. It never installs anything from outside the kit's own marketplace.json.
+- Don't let an agent hand-edit .claude/agents/*.md or the agent-kit block in CLAUDE.md: `self` regenerates them. Change the generator in agent-kit.sh instead.
+- A broken orchestrator-guard or agent file can lock you out; if that happens, tell the user to fix it with `claude --agent solo`.
+MD
+    fi
   } > "$dir/orchestrator.md"
 
   python3 - "$proj/.claude/settings.json" <<'PY'
@@ -1918,6 +1940,42 @@ PY
   if [ "$code" = 1 ]; then say "sessions there start as the orchestrator; for a hands-on session run: claude --agent solo"; fi
 }
 
+kit_origin_repo() { # prints owner/repo from the kit's GitHub origin remote, or nothing
+  local url repo
+  url="$(git -C "$KIT_DIR" remote get-url origin 2>/dev/null)" || return 0
+  case "$url" in
+    git@github.com:*|https://github.com/*|ssh://git@github.com/*)
+      repo="${url#git@github.com:}"; repo="${repo#https://github.com/}"; repo="${repo#ssh://git@github.com/}"
+      repo="${repo%.git}"; printf '%s\n' "${repo%/}" ;;
+  esac
+}
+
+# ---------------------------------------------------------------- self
+# `self [project options]`: wire the kit repo to itself so its orchestrator session can change the kit.
+# The kit marketplace is pointed at this checkout (a directory marketplace), so the packs this repo loads are
+# the ones in its own plugins/ folder, then `project` runs on the kit root (the only path outside_kit lets through,
+# and only here). Re-running it after a plugin change reloads the packs. Other projects keep their installed
+# version until they run `project`/`ensure` again, since installs are cached per version.
+cmd_self() {
+  check_prereqs
+  local mk
+  KIT_NAME="$(ensure_py mkname "$KIT_DIR")" || die "cannot read the marketplace name from $KIT_DIR/.claude-plugin/marketplace.json"
+  mk="$(claude plugin marketplace list --json </dev/null)" || die "claude plugin marketplace list --json failed"
+  # anything but "a directory marketplace at exactly this checkout" (missing, GitHub, another clone) is repointed
+  if ! python3 -I -c '
+import json, os, sys
+rp = os.path.realpath
+sys.exit(0 if any(m.get("name") == sys.argv[2] and m.get("source") == "directory" and rp(m.get("path", "")) == rp(sys.argv[3])
+                  for m in json.loads(sys.argv[1])) else 1)' "$mk" "$KIT_NAME" "$KIT_DIR"; then
+    say "pointing marketplace $KIT_NAME at this checkout ($KIT_DIR)"
+    claude plugin marketplace add "$KIT_DIR" </dev/null || die "could not add marketplace $KIT_NAME from $KIT_DIR"
+  fi
+  claude plugin marketplace update "$KIT_NAME" </dev/null >/dev/null || warn "could not update marketplace $KIT_NAME"
+  [ -n "${KIT_REPO:-}" ] || KIT_REPO="$(kit_origin_repo)"
+  KIT_SELF=1 cmd_project "$KIT_DIR" "$@"
+  say "the kit is wired to itself. Plugins load in place from plugins/: run /reload-plugins or restart Claude Code here to pick up changes."
+}
+
 # ---------------------------------------------------------------- ensure
 # `ensure <path> [design] [code] [--json]`: unattended, idempotent install/update of the kit into one git repo.
 # Exit codes: 0 ok (changed or not), 2 usage or bad path (nothing written), 3 claude/git/python3 missing,
@@ -2099,16 +2157,9 @@ cmd_ensure() {
   E_TMP="$(mktemp -d "${TMPDIR:-/tmp}/agent-kit-ensure.XXXXXX")" || ek_fail 6 "cannot create a scratch dir in ${TMPDIR:-/tmp}"
   trap 'rm -rf "$E_TMP"' EXIT
 
-  local kit repo="${KIT_REPO:-}" url
+  local kit repo="${KIT_REPO:-}"
   kit="$(ensure_py mkname "$KIT_DIR")" || ek_fail 4 "cannot read the marketplace name from $KIT_DIR/.claude-plugin/marketplace.json"
-  if [ -z "$repo" ]; then   # no KIT_REPO: take it from the kit's own origin remote (the project is never asked)
-    url="$(git -C "$KIT_DIR" remote get-url origin 2>/dev/null)" || url=""
-    case "$url" in
-      git@github.com:*|https://github.com/*|ssh://git@github.com/*)
-        repo="${url#git@github.com:}"; repo="${repo#https://github.com/}"; repo="${repo#ssh://git@github.com/}"
-        repo="${repo%.git}"; repo="${repo%/}" ;;
-    esac
-  fi
+  [ -n "$repo" ] || repo="$(kit_origin_repo)"   # no KIT_REPO: take it from the kit's own origin (the project is never asked)
   [ -n "$repo" ] || warn "no KIT_REPO and no GitHub origin on the kit — settings.json won't say where $kit lives"
 
   local snap_before; snap_before="$(ensure_py snapshot "$proj")"
@@ -2361,6 +2412,7 @@ main() {
     setup) cmd_setup ;;
     ensure) cmd_ensure "$@" ;;
     project) cmd_project "$@" ;;
+    self) cmd_self "$@" ;;
     repo) cmd_repo "$@" ;;
     new) cmd_new "$@" ;;
     doctor) cmd_doctor "$@" ;;
