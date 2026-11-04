@@ -64,7 +64,10 @@ HANDOFF_NAME = re.compile(r"^(zsl-)?handoff[\w.-]*\.md$")  # /zsl:handoff writes
 
 def lead_may_write(event):
     """lead may Write only the /zsl:handoff output: <temp dir>/[zsl-]handoff*.md, absolute path, directly in the temp dir."""
-    raw = (event.get("tool_input") or {}).get("file_path", "")
+    tool_input = event.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return False
+    raw = tool_input.get("file_path", "")
     if not isinstance(raw, str) or not os.path.isabs(raw):
         return False
     path = os.path.realpath(raw)
@@ -81,9 +84,11 @@ def main():
         return
     agent = event.get("agent_type")
     if agent == "lead":
-        # defense in depth next to the agent's tools list: lead may use Write, and only for the handoff file
+        # The hook matcher covers only Edit|Write|MultiEdit|NotebookEdit|Bash, so "denied" means those tools;
+        # lead's `tools:` frontmatter is what limits every other tool. Here lead may Write only the handoff file.
         if event.get("tool_name") != "Write" or not lead_may_write(event):
-            deny("lead can write only the handoff file (/zsl:handoff output in the temp directory), nothing else "
+            deny("lead can write only the handoff file: [zsl-]handoff*.md directly in the temp directory "
+                 "(/zsl:handoff output, absolute path), nothing else "
                  f"(blocked: {event.get('tool_name')}). Send the change back to the orchestrator: claude --agent orchestrator")
         return
     if agent != "orchestrator":

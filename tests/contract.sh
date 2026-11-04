@@ -217,6 +217,8 @@ case14() { # lead agent and the sonnet default (offline: reads the generator and
   ev Write "$t/handoff-x.md" | grep -q '"deny"' && fail "guard denied lead Write to the handoff file"
   ev Write "handoff-x.md" | grep -q '"deny"' || fail "guard allowed lead Write to a relative path"
   ev Edit "$t/handoff-x.md" | grep -q '"deny"' || fail "guard allowed lead Edit"
+  ev Write "$KIT/README.md" | grep -q 'handoff' || fail "deny reason does not mention handoff"
+  printf '{"agent_type":"lead","tool_name":"Write","tool_input":"oops"}' | python3 "$g" | grep -q '"deny"' || fail "guard did not deny lead with non-dict tool_input"
   ! grep -q 'setdefault("model", "opusplan")' "$KIT/agent-kit.sh" || fail "generator still emits opusplan"
 }
 case13() {
