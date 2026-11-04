@@ -3,7 +3,7 @@
 My personal Claude Code setup. One script, `agent-kit.sh`, turns any folder into a project that:
 
 - runs entirely on my **Claude Pro** login (no API key, no other AI accounts)
-- runs every session as an **orchestrator** (model `opusplan`: Opus only in plan mode, Sonnet otherwise) that hands the work to cheaper **subagents** (Sonnet/Haiku). It can't edit files itself, so it has to delegate
+- runs every session as a **Sonnet orchestrator** (model `sonnet`) that hands the work to cheaper **subagents** (Haiku, and Sonnet for the bigger jobs). It can't edit files itself, so it has to delegate. An **Opus `lead`** is one command away for handoffs and stuck problems
 - **remembers** decisions between sessions with Basic Memory
 - can't push code that leaks a secret, fails its tests, or fails an **independent review**
 
@@ -90,14 +90,15 @@ It never touches `.mcp.json`, `mcpServers` or `claude mcp` (except reading `clau
 
 Less Opus, more Sonnet and Haiku. In my transcripts the Opus orchestrator was about half the spend, mostly re-reading context each turn and running routine Bash.
 
-- **Orchestrator on `opusplan`.** The agent file has no `model:` line: Claude Code's subagent docs list only `sonnet`, `opus`, `haiku`, `fable`, a full model ID or `inherit` for agent frontmatter, so `project` writes `"model": "opusplan"` into the project's `.claude/settings.json` instead (Opus in plan mode, Sonnet otherwise). The agent file does set `effort: medium` (agent frontmatter supports `effort`). Docs: https://code.claude.com/docs/en/sub-agents and https://code.claude.com/docs/en/model-config.
+- **Orchestrator on Sonnet.** The agent file has no `model:` line: Claude Code's subagent docs list only `sonnet`, `opus`, `haiku`, `fable`, a full model ID or `inherit` for agent frontmatter, so `project` writes `"model": "sonnet"` into the project's `.claude/settings.json` instead. The agent file does set `effort: medium` (agent frontmatter supports `effort`). Docs: https://code.claude.com/docs/en/sub-agents and https://code.claude.com/docs/en/model-config.
+- **`lead` (Opus).** The Opus agent for the turns that need it: writing handoffs and getting unstuck when a problem keeps failing. Start it with `claude --agent lead`, or switch the current session with `/model opus`.
 - **`kit-code:runner` (Haiku, read-only)** runs checks, tests and git status/diff/log and digs through logs, reporting pass/fail with failing test names and `file:line`, never full output.
-- **`kit-code:coder-lite` (Haiku)** does mechanical edits only (renames, doc/copy/config tweaks, tests that copy a pattern) and stops to report if the task needs judgment.
+- **`kit-code:coder-lite` (Haiku)** does clear-step work in up to about three files: renames, doc/copy/config tweaks, tests that copy a pattern, and bug fixes with a known cause. It bounces design decisions and multi-module changes to the coder.
 - **`design-auditor` moved to Haiku.**
 - **Haiku `Explore` at user level.** `register` writes `~/.claude/agents/Explore.md` unless you already have your own (no agent-kit marker; a dangling symlink counts as yours).
 - **`--no-ui`** is an alias for `--no-design`: no kit-design, Hallmark, Design and Refine, designer or design-auditor. The default is unchanged.
 - **`./agent-kit.sh usage [--since YYYY-MM-DD]`** prints tokens and estimated dollars per model family and per agent type from `~/.claude/projects`.
-- `project` sets `"model": "opusplan"` only if `.claude/settings.json` has no `model` yet; your own choice is left alone.
+- `project` sets `"model": "sonnet"` only if `.claude/settings.json` has no `model` yet; your own choice is left alone.
 - The orchestrator suggests `/compact` or a handoff when a session passes about 120k tokens. To pick this up in an existing project, re-run `./agent-kit.sh project <path>`.
 
 ---
@@ -125,7 +126,7 @@ flowchart TB
     me([Me]) --> main
 
     subgraph CC["Claude Code · Pro login"]
-        main["Main session = orchestrator agent<br/>opusplan · plans and delegates<br/>can't edit files"]
+        main["Main session = orchestrator agent<br/>Sonnet · plans and delegates<br/>can't edit files"]
 
         subgraph design["kit-design"]
             designer["designer<br/>Sonnet · builds UI"]
@@ -137,7 +138,7 @@ flowchart TB
             reviewer["reviewer<br/>Sonnet · read-only"]
             simple["simplicity-reviewer<br/>Haiku · read-only"]
             runner["runner<br/>Haiku · checks, git, logs · read-only"]
-            lite["coder-lite<br/>Haiku · mechanical edits"]
+            lite["coder-lite<br/>Haiku · clear-step edits"]
         end
 
         explore["Explore<br/>Haiku · read-only search"]
@@ -273,7 +274,7 @@ To add the kit to a project that already exists, use `./agent-kit.sh project <pa
 ```mermaid
 sequenceDiagram
     actor Me
-    participant M as Orchestrator (opusplan)
+    participant M as Orchestrator (Sonnet)
     participant BM as Basic Memory
     participant A as Subagents
     participant G as Push gate
@@ -428,7 +429,7 @@ My Pro usage is shared between the Claude app and Claude Code, and every subagen
 | Install only the packs a project needs | Every installed skill's description loads every turn. |
 | Know what the MCP servers cost | Each server's tool list loads when its agent starts, so only agents that name a server pay for it (the orchestrator pays for none). `./agent-kit.sh doctor` lists the servers. Playwright and Chrome DevTools run headless. |
 | Run `./agent-kit.sh doctor` now and then | Shows skills and tokens per plugin, plus duplicate skill names. The kit is about 45 skills / ~4k tokens a turn, plus the Basic Memory plugin. |
-| Let subagents do the work | The orchestrator forces this. Its model is `opusplan`, so normal turns run on Sonnet, and it sends routine checks and edits to the Haiku `runner` and `coder-lite`. |
+| Let subagents do the work | The orchestrator forces this. Its model is `sonnet`, so normal turns run on Sonnet, and it sends routine checks and clear-step edits to the Haiku `runner` and `coder-lite`. For handoffs and stuck problems, switch to the Opus `lead` (`claude --agent lead`, or `/model opus`). |
 | Haiku Explore everywhere | The built-in Explore can run on Opus; `register` installs a Haiku one at user level, and `project` writes one per project. |
 | Check where the spend goes | `./agent-kit.sh usage` shows the Opus share. |
 | `/zsl:handoff`, then `/clear` | Long sessions get expensive and worse. The orchestrator suggests `/compact` or a handoff once a session passes roughly 120k tokens. |
