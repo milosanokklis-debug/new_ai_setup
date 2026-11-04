@@ -1,4 +1,5 @@
 {
+  "model": "sonnet",
   "enabledPlugins": {
     "agent-skills@addy-agent-skills": true,
     "kit-core@agent-kit": true,
@@ -6,7 +7,8 @@
     "design-and-refine@design-plugins": true,
     "kit-design@agent-kit": true,
     "kit-code@agent-kit": true,
-    "basic-memory@basicmachines-co": true
+    "basic-memory@basicmachines-co": true,
+    "taste-skill@agent-kit": true
   },
   "extraKnownMarketplaces": {
     "addy-agent-skills": {
@@ -56,12 +58,11 @@
       }
     }
   },
+  "outputStyle": "basic-memory",
+  "agent": "orchestrator",
   "basicMemory": {
     "primaryProject": "new-ai-setup",
     "captureFolder": "sessions",
     "rememberFolder": "bm-remember"
-  },
-  "outputStyle": "basic-memory",
-  "agent": "orchestrator",
-  "model": "opusplan"
+  }
 }

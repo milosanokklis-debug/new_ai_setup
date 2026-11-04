@@ -49,7 +49,7 @@ set -euo pipefail
 
 KIT_NAME="${KIT_NAME:-agent-kit}"
 METHOD="${METHOD:-agent-skills}"
-KIT_VERSION="0.7.0"
+KIT_VERSION="0.8.0"
 GITLEAKS_VERSION="${GITLEAKS_VERSION:-8.30.1}"
 AGENT_SKILLS_SHA="1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62"   # vercel-labs/agent-skills commit for the fetched guideline skills
 SEMGREP_VERSION="1.183.0"   # pinned for setup, vet and the reviewer's MCP server; update on purpose
@@ -671,6 +671,7 @@ MD
 
   # ---- kit-core: orchestrator guard. Only the main thread running as "orchestrator" is affected:
   # hooks carry agent_id inside subagents, and agent_type is "solo" in a hands-on session.
+  # The "lead" main thread is also checked: it may only Write the handoff file in the temp dir.
   write_json "$kit/plugins/kit-core/hooks/hooks.json" '{
     "hooks": { "PreToolUse": [ { "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
       "hooks": [ { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/orchestrator-guard.py\"" } ] } ] } }'
@@ -685,8 +686,10 @@ file edits on the orchestrator's own thread: Edit/Write tools, and the common wa
 read-only commands are untouched. It is a pattern match, so it is a guard rail, not a sandbox.
 """
 import json
+import os
 import re
 import sys
+import tempfile
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 INTERPRETER = re.compile(r"\b(python3?|node|bun|deno|ruby)\b")
@@ -729,12 +732,45 @@ def bash_write(cmd):
     return None
 
 
+def deny(reason):
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                             "permissionDecision": "deny",
+                                             "permissionDecisionReason": reason}}))
+
+
+HANDOFF_NAME = re.compile(r"^(zsl-)?handoff[\w.-]*\.md$")  # /zsl:handoff writes zsl-handoff-YYYYMMDD-slug.md
+
+
+def lead_may_write(event):
+    """lead may Write only the /zsl:handoff output: <temp dir>/[zsl-]handoff*.md, absolute path, directly in the temp dir."""
+    tool_input = event.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return False
+    raw = tool_input.get("file_path", "")
+    if not isinstance(raw, str) or not os.path.isabs(raw):
+        return False
+    path = os.path.realpath(raw)
+    return (os.path.dirname(path) == os.path.realpath(tempfile.gettempdir())
+            and bool(HANDOFF_NAME.match(os.path.basename(path))))
+
+
 def main():
     try:
         event = json.load(sys.stdin)
     except ValueError:
         return
-    if event.get("agent_type") != "orchestrator" or event.get("agent_id"):
+    if event.get("agent_id"):
+        return
+    agent = event.get("agent_type")
+    if agent == "lead":
+        # The hook matcher covers only Edit|Write|MultiEdit|NotebookEdit|Bash, so "denied" means those tools;
+        # lead's `tools:` frontmatter is what limits every other tool. Here lead may Write only the handoff file.
+        if event.get("tool_name") != "Write" or not lead_may_write(event):
+            deny("lead can write only the handoff file: [zsl-]handoff*.md directly in the temp directory "
+                 "(/zsl:handoff output, absolute path), nothing else "
+                 f"(blocked: {event.get('tool_name')}). Send the change back to the orchestrator: claude --agent orchestrator")
+        return
+    if agent != "orchestrator":
         return
     tool = event.get("tool_name", "")
     what = tool if tool in EDIT_TOOLS else None
@@ -745,9 +781,7 @@ def main():
     reason = (f"The orchestrator doesn't change files itself (blocked: {what}). Delegate the change to "
               "kit-code:coder (code, tests, config, docs) or kit-design:designer (anything users see). "
               "If the user wants to work hands-on, they can restart with: claude --agent solo")
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-                                             "permissionDecision": "deny",
-                                             "permissionDecisionReason": reason}}))
+    deny(reason)
 
 
 if __name__ == "__main__":
@@ -770,8 +804,8 @@ Start a new project (git, GitHub repo, gates, kit, Basic Memory): \`./agent-kit.
 Wire an existing project to the kit only (or update one): \`./agent-kit.sh project <path>\`.
 Leave a pack out with \`--no-design\` (or \`--no-ui\`) or \`--no-code\`.
 
-Sessions run as an orchestrator agent (model opusplan: Opus to plan, Sonnet otherwise) that delegates to
-coder/designer (Sonnet) and runner/coder-lite (Haiku); a hook stops it changing files itself. Hands-on session instead: \`claude --agent solo\`.
+Sessions run as an orchestrator agent (model sonnet) that delegates to
+coder/designer (Sonnet) and runner/coder-lite (Haiku); \`claude --agent lead\` (Opus) writes the handoff and answers what the cheaper agents could not; a hook stops it changing files itself. Hands-on session instead: \`claude --agent solo\`.
 
 ## Green light before every push
 
@@ -1587,6 +1621,8 @@ kit_block() { # project-dir design code memory orchestrator ui-guide plan-new pl
     [ "$design" = 1 ] && \
       printf -- '- UI work → kit-design:designer agent. After UI changes → kit-design:design-auditor agent.\n'
   fi
+  [ "$code" = 1 ] && [ "$orch" = 1 ] && \
+    printf -- '- Handoff document or a problem the cheaper agents are stuck on → `claude --agent lead` (Opus), or `/model opus`.\n'
   printf -- '- New feature → %s; big feature → %s. Between tasks → %s, then /clear.\n' "$plan_new" "$plan_big" "$plan_handoff"
   [ "$design" = 1 ] && [ "$uig" = 1 ] && \
     printf -- '- Questions about the UI skills (which one, what it says, how it fits this code) → `claude --agent ui-guide` (read-only).\n'
@@ -1671,12 +1707,13 @@ MD
   fi
 
   if [ "$code" != 1 ]; then
-    rm -f "$dir/orchestrator.md"
+    rm -f "$dir/orchestrator.md" "$dir/lead.md"
     python3 - "$proj/.claude/settings.json" <<'PY'
 import json, sys
 p = sys.argv[1]; s = json.load(open(p))
 if s.get("agent") == "orchestrator":
     del s["agent"]
+# remove only "opusplan", which the old kit wrote; a deliberate "sonnet" is the user's and stays
 if s.get("model") == "opusplan":
     del s["model"]
 json.dump(s, open(p, "w"), indent=2); open(p, "a").write("\n")
@@ -1688,6 +1725,32 @@ PY
   [ "$design" = 1 ] && spawn="kit-code:coder, kit-code:coder-lite, kit-code:runner, kit-design:designer, kit-design:design-auditor, kit-code:reviewer, kit-code:simplicity-reviewer, Explore"
   tools="Agent($spawn), Read, Glob, Grep, Bash, Skill, ToolSearch, AskUserQuestion, TaskCreate, TaskUpdate, TaskList, TaskGet, WebFetch, WebSearch"
   [ "$memory" = 1 ] && tools+=", mcp__basic-memory__*"
+
+  # Opus agent for the handoff doc and the questions the cheaper agents could not answer: claude --agent lead
+  local ltools="Agent(Explore, kit-code:runner), Read, Glob, Grep, Write, Skill, ToolSearch, AskUserQuestion"
+  [ "$memory" = 1 ] && ltools+=", mcp__basic-memory__bm_search, mcp__basic-memory__bm_read, mcp__basic-memory__bm_list, mcp__basic-memory__bm_find, mcp__basic-memory__bm_context"
+  cat > "$dir/lead.md" <<MD
+---
+name: lead
+description: Opus session for the handoff document and for problems the cheaper agents could not solve. No routine work. Start it with claude --agent lead, or switch with /model opus.
+model: opus
+effort: medium
+tools: $ltools
+---
+MD
+  cat >> "$dir/lead.md" <<MD
+<!-- generated by agent-kit.sh project; re-running it overwrites this file -->
+You are the senior engineer on call in this project. You do two things and nothing else:
+- Write the handoff document with $plan_handoff, so a fresh session can continue the work.
+- Answer questions and unstick problems that the cheaper agents (orchestrator, coder, coder-lite) could not.
+
+MD
+  cat >> "$dir/lead.md" <<'MD'
+- No routine work: don't implement, run checks or do bulk reading. You can Write only the handoff file (a hook blocks every other path and tool); anything else goes back to the orchestrator (`claude --agent orchestrator`) or `claude --agent solo`.
+- Reading more than a couple of files: spawn Explore. Commands, tests, git and logs: spawn the runner. You have no Bash yourself.
+- Give the answer or the decision first, then the reasons. Be brief. Use file_path:line references.
+- Never repeat secrets from .env or similar files.
+MD
 
   {
     cat <<MD
@@ -1701,8 +1764,8 @@ tools: $tools
 You are the lead engineer in a Claude Code session in this project. You plan, delegate, check and report. You do not change files yourself: you have no Edit or Write tool, and a hook blocks Bash commands that write files. Every change to the repo goes through an agent.
 
 ## Your agents (Agent tool; use these exact subagent_type values)
-- \`kit-code:coder\` (Sonnet): real code and tests
-- \`kit-code:coder-lite\` (Haiku): mechanical edits
+- \`kit-code:coder-lite\` (Haiku): the default for anything with clear steps, including designer polish (copy, CSS, spacing tweaks after a first pass)
+- \`kit-code:coder\` (Sonnet, low effort): design decisions, multi-module changes, or work coder-lite bounced back
 - \`kit-code:runner\` (Haiku, read-only): checks, tests, git, logs
 MD
     [ "$design" = 1 ] && cat <<'MD'
@@ -1724,14 +1787,16 @@ MD
 MD
     fi
     cat <<'MD'
-- Dispatch. Mechanical edits go to coder-lite, real code to the coder; checks, test runs, bulk reads and log digging go to the runner, not your own Bash. Independent tasks go out in parallel in one message. Tasks that touch the same files go one after another. Agents don't see this conversation, so each prompt is short but complete: the goal, the files or area, constraints, how to verify, and what to report back.
+- Dispatch. Anything with clear steps goes to coder-lite first. The coder gets only design decisions, multi-module changes, or work coder-lite bounced back. All multi-file reading goes to Explore. All Bash except a one-line `git status` goes to the runner: checks, test runs, git reads, log digging. Independent tasks go out in parallel in one message. Tasks that touch the same files go one after another. Agents don't see this conversation, so each prompt is short but complete: the goal, the files or area, constraints, how to verify, and what to report back.
 MD
     [ "$design" = 1 ] && cat <<'MD'
+- Designer polish after a first pass (copy, CSS, spacing tweaks) goes to coder-lite, not back to the designer.
 - After any UI change, run the design-auditor and send its punch list back to the designer. The designer and coder can drive a browser: give the design-auditor the dev server URL so it audits the rendered page.
 MD
     cat <<'MD'
-- Before calling work done or committing, run the reviewer and simplicity-reviewer in parallel and send blockers back to the agent that wrote the code. Have the runner run the project's checks (scripts/verify.sh if it exists, otherwise the tests) and report the real result.
+- Run the reviewer and simplicity-reviewer once per finished batch of tasks, in parallel, before calling the work done or committing; not after every task and send blockers back to the agent that wrote the code. Have the runner run the project's checks (scripts/verify.sh if it exists, otherwise the tests) and report the real result.
 - Report briefly: what changed, what was verified and how, and what's left.
+- Hand off to the lead (Opus) for a handoff document or a problem you or the coder are stuck on: tell the user to run `claude --agent lead` (or `/model opus`) and give them a short summary to paste.
 
 ## Rules
 - Don't change files yourself, not even a one-line fix. Delegate it. If the user wants to work hands-on, tell them to restart with `claude --agent solo`.
@@ -1759,9 +1824,9 @@ MD
 import json, sys
 p = sys.argv[1]; s = json.load(open(p))
 s["agent"] = "orchestrator"
-# Opus only in plan mode, Sonnet otherwise; agent frontmatter can't take this alias. Never overwrite the user's own choice.
-if s.setdefault("model", "opusplan") != "opusplan":
-    print("   note: .claude/settings.json already sets model %r; left as is (the kit suggests opusplan)" % s["model"])
+# Sonnet for the main session; Opus is the lead agent. Never overwrite the user's own choice.
+if s.setdefault("model", "sonnet") != "sonnet":
+    print("   note: .claude/settings.json already sets model %r; left as is (the kit suggests sonnet)" % s["model"])
 json.dump(s, open(p, "w"), indent=2); open(p, "a").write("\n")
 PY
 }
