@@ -202,6 +202,23 @@ else:
 PY
   done
 }
+case14() { # lead agent and the sonnet default (offline: reads the generator and the kit's own generated agents)
+  local l="$KIT/.claude/agents/lead.md"
+  [ -f "$l" ] || { fail "$l missing (run ./agent-kit.sh self)"; return; }
+  grep -q '^model: opus$' "$l" || fail "lead.md is not model: opus"
+  grep -q '^tools:.*Agent(Explore, kit-code:runner)' "$l" || fail "lead.md can spawn more than Explore and runner"
+  grep -q 'setdefault("model", "sonnet")' "$KIT/agent-kit.sh" || fail 'generator does not default to "model": "sonnet"'
+  local g="$WORK/guard-gen.py" t ev
+  sed -n "/orchestrator-guard.py\" <<'PY'/,/^PY\$/p" "$KIT/agent-kit.sh" | sed '1d;$d' >"$g"
+  cmp -s "$g" "$KIT/plugins/kit-core/scripts/orchestrator-guard.py" || fail "generated guard differs from plugins/kit-core/scripts/orchestrator-guard.py"
+  t="$(python3 -c 'import tempfile,os;print(os.path.realpath(tempfile.gettempdir()))')"
+  ev() { printf '{"agent_type":"lead","tool_name":"%s","tool_input":{"file_path":"%s"}}' "$1" "$2" | python3 "$g"; }
+  ev Write "$KIT/README.md" | grep -q '"deny"' || fail "guard allowed lead Write to a repo path"
+  ev Write "$t/handoff-x.md" | grep -q '"deny"' && fail "guard denied lead Write to the handoff file"
+  ev Write "handoff-x.md" | grep -q '"deny"' || fail "guard allowed lead Write to a relative path"
+  ev Edit "$t/handoff-x.md" | grep -q '"deny"' || fail "guard allowed lead Edit"
+  ! grep -q 'setdefault("model", "opusplan")' "$KIT/agent-kit.sh" || fail "generator still emits opusplan"
+}
 case13() {
   need_ensure_env || return 77; local f h; fixture fx13; f="$FX"; h="$WORK/home13"; mkdir -p "$h"
   RC=0; ( cd "$KIT" && env HOME="$h" KIT_REPO=.. timeout 120 ./agent-kit.sh ensure "$f" --json </dev/null >"$OUT" 2>"$ERR" ) || RC=$?
@@ -223,6 +240,7 @@ run_case 7 "repo derived from origin" case7
 run_case 8 "usage errors exit 2, write nothing" case8
 run_case 9 "network blocked never hangs" case9
 run_case 12 "agent basic-memory tool lists" case12
+run_case 14 "lead.md and model sonnet generated" case14
 run_case 13 "basic-memory missing => memory:missing" case13
 
 # 10: git history untouched in every fixture; 11: no .mcp.json / mcpServers anywhere
