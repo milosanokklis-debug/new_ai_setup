@@ -21,6 +21,20 @@ This repo is also a Claude Code plugin marketplace. The `plugins/` folder holds 
 
 ---
 
+## Editing the kit with the kit (`self`)
+
+```
+./agent-kit.sh self [--no-design|--no-ui] [--no-code] [--no-memory]
+```
+
+Wires this repo to itself so its orchestrator session can improve the kit through its own agents. It points the `agent-kit` marketplace at this checkout (a directory marketplace; it replaces a GitHub source or another clone such as `~/agent-kit`), then runs `project` on the kit root. Because the packs load in place from `plugins/`, an agent's edit there takes effect after `/reload-plugins` or a restart. `project`, `new`, `repo` and `ensure` still refuse the kit folder, and `self` only ever accepts the kit root, never a folder inside it.
+
+In the kit, the generated orchestrator gets a "This repo is the kit" section: plugin changes go through the coder like any other code, need a `KIT_VERSION` bump, and are checked by the runner with the offline tests. After review it may run `./agent-kit.sh self` on its own to regenerate `.claude/agents/` (the one install command it may run without asking), and it never hand-edits generated files. If a broken guard or agent file locks the orchestrator out, fix it with `claude --agent solo`.
+
+Repointing the marketplace is user-wide, and directory plugins load in place, so **every project** loads this checkout's `plugins/` from its next session on, unfinished edits included. Do risky plugin work on a branch and switch back to `main` before working in other projects. To undo the repoint, run `claude plugin marketplace add <previous folder>`.
+
+---
+
 ## Unattended installs (`ensure`)
 
 ```
