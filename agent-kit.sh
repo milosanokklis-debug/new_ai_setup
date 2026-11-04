@@ -1708,7 +1708,8 @@ import json, sys
 p = sys.argv[1]; s = json.load(open(p))
 if s.get("agent") == "orchestrator":
     del s["agent"]
-if s.get("model") in ("opusplan", "sonnet"):
+# remove only "opusplan", which the old kit wrote; a deliberate "sonnet" is the user's and stays
+if s.get("model") == "opusplan":
     del s["model"]
 json.dump(s, open(p, "w"), indent=2); open(p, "a").write("\n")
 PY

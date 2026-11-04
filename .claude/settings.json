@@ -1,5 +1,5 @@
 {
-  "model": "opusplan",
+  "model": "sonnet",
   "enabledPlugins": {
     "agent-skills@addy-agent-skills": true,
     "kit-core@agent-kit": true,
