@@ -62,8 +62,8 @@ def deny(reason):
 HANDOFF_NAME = re.compile(r"^(zsl-)?handoff[\w.-]*\.md$")  # /zsl:handoff writes zsl-handoff-YYYYMMDD-slug.md
 
 
-def lead_may_write(event):
-    """lead may Write only the /zsl:handoff output: <temp dir>/[zsl-]handoff*.md, absolute path, directly in the temp dir."""
+def may_write(event, folder, name_re):
+    """Write allowed only to an absolute path whose real location is directly in `folder` (already resolved) with a matching name."""
     tool_input = event.get("tool_input")
     if not isinstance(tool_input, dict):
         return False
@@ -71,8 +71,23 @@ def lead_may_write(event):
     if not isinstance(raw, str) or not os.path.isabs(raw):
         return False
     path = os.path.realpath(raw)
-    return (os.path.dirname(path) == os.path.realpath(tempfile.gettempdir())
-            and bool(HANDOFF_NAME.match(os.path.basename(path))))
+    return os.path.dirname(path) == folder and bool(name_re.match(os.path.basename(path)))
+
+
+RUN_NAME = re.compile(r"^[A-Za-z0-9][\w.-]*\.md$")
+
+
+def lead_may_write(event):
+    """lead may Write only the /zsl:handoff output: <temp dir>/[zsl-]handoff*.md."""
+    return may_write(event, os.path.realpath(tempfile.gettempdir()), HANDOFF_NAME)
+
+
+def supervisor_may_write(event):
+    """supervisor may Write only <project root>/docs/handoff/runs/<name>.md; a symlinked runs dir fails the realpath match."""
+    root = os.environ.get("CLAUDE_PROJECT_DIR") or event.get("cwd")
+    if not isinstance(root, str) or not os.path.isabs(root):
+        return False
+    return may_write(event, os.path.join(os.path.realpath(root), "docs", "handoff", "runs"), RUN_NAME)
 
 
 def main():
@@ -80,9 +95,16 @@ def main():
         event = json.load(sys.stdin)
     except ValueError:
         return
-    if event.get("agent_id"):
-        return
+    # Gate on agent_type alone: the rules apply to the main session and to subagents of that type.
+    # ASSUMPTION (unverified): a subagent spawned as "orchestrator" reports agent_type == "orchestrator".
+    # Kit subagents (coder, runner, ...) have other types and are unaffected.
     agent = event.get("agent_type")
+    if agent == "supervisor":
+        if event.get("tool_name") != "Write" or not supervisor_may_write(event):
+            deny("supervisor can write only its run file: docs/handoff/runs/<name>.md under the project "
+                 f"(absolute path, directly in that folder; blocked: {event.get('tool_name')}). "
+                 "Changes to files go to a fresh orchestrator subagent.")
+        return
     if agent == "lead":
         # The hook matcher covers only Edit|Write|MultiEdit|NotebookEdit|Bash, so "denied" means those tools;
         # lead's `tools:` frontmatter is what limits every other tool. Here lead may Write only the handoff file.

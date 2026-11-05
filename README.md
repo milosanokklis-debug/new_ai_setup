@@ -3,11 +3,29 @@
 My personal Claude Code setup. One script, `agent-kit.sh`, turns any folder into a project that:
 
 - runs entirely on my **Claude Pro** login (no API key, no other AI accounts)
-- runs every session as a **Sonnet orchestrator** (model `sonnet`) that hands the work to cheaper **subagents** (Haiku, and Sonnet for the bigger jobs). It can't edit files itself, so it has to delegate. An **Opus `lead`** is one command away for handoffs and stuck problems
+- runs every session as a **Sonnet orchestrator** (model `sonnet`) that hands the work to cheaper **subagents** (Haiku, and Sonnet for the bigger jobs). It can't edit files itself, so it has to delegate. An **Opus `lead`** is one command away for handoffs and stuck problems, and an **Opus `supervisor`** runs a whole handoff step by step
 - **remembers** decisions between sessions with Basic Memory
 - can't push code that leaks a secret, fails its tests, or fails an **independent review**
 
 This repo is also a Claude Code plugin marketplace. The `plugins/` folder holds the three packs the script installs.
+
+---
+
+## What's new in 0.9
+
+- **`supervisor` (Opus).** Runs a handoff document end to end without check-ins: `claude --agent supervisor "run docs/handoff/<file>.md"`. It writes a run file (`docs/handoff/runs/<slug>.md`: steps, limits, decisions) and spawns a **fresh `orchestrator` subagent for each step**, so every step starts with a clean context (the same effect as `/clear`). Continue an interrupted run with `resume docs/handoff/runs/<slug>.md`. The default agent in `settings.json` is still the orchestrator.
+- It waits for you only on a stop condition: an action the handoff does not authorise (push, PR, merge, delete, publish, install, off-limits files), a scope change, a step that fails twice, a secret it needs, or Basic Memory being unavailable. It never skips a gate (`--no-verify`, `SKIP_REVIEW`, `SKIP_VERIFY`).
+- The orchestrator has a "supervised" mode: it finishes the whole step, commits locally (never pushes, unless the limits say otherwise) and returns a short report. Unsupervised, it completes every task in the request without pausing and mentions `/zsl:handoff` + `/clear` once, at the end.
+- The guard now keys on `agent_type` alone: orchestrator rules apply to the main session and to orchestrator subagents. `supervisor` can Write only `docs/handoff/runs/<name>.md`. Nesting needs Claude Code >= 2.1.219 (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`, default 3). The `agent_type` a subagent reports is assumed to be `orchestrator`; it is not verified yet.
+- The CLAUDE.md block no longer says "Between tasks, /handoff, /clear"; it gains a supervisor routing line.
+
+### Starting a supervised run without prompts
+
+A run that stops at every permission prompt is not unattended. The supported options (see [permission modes](https://code.claude.com/docs/en/permission-modes) and [permissions](https://code.claude.com/docs/en/permissions)), safest first:
+
+1. **A `permissions.allow` list** in the project's `.claude/settings.json` (or `settings.local.json`) naming the commands the run needs (for example `Bash(git status:*)`, `Bash(git commit:*)`, `Bash(tests/*)`), plus `claude --permission-mode dontAsk "..."` (`claude --agent supervisor --permission-mode dontAsk "run docs/handoff/<file>.md"`). In `dontAsk` anything not pre-approved is denied instead of prompting, so the run cannot do more than the list allows.
+2. `--permission-mode acceptEdits` auto-accepts file edits in the working directory; shell commands still prompt unless allowed.
+3. `--permission-mode bypassPermissions` skips every prompt. It is your own opt-in choice for a throwaway or sandboxed environment. The kit does not enable it and `agent-kit.sh` never writes it into settings. The guard hook still runs in this mode.
 
 ---
 
@@ -123,9 +141,12 @@ Less Opus, more Sonnet and Haiku. In my transcripts the Opus orchestrator was ab
 
 ```mermaid
 flowchart TB
-    me([Me]) --> main
+    me([Me]) --> sup
+    me --> main
 
     subgraph CC["Claude Code · Pro login"]
+        sup["supervisor agent (optional)<br/>Opus · runs a handoff end to end<br/>fresh orchestrator per step"]
+        sup -.-> main
         main["Main session = orchestrator agent<br/>Sonnet · plans and delegates<br/>can't edit files"]
 
         subgraph design["kit-design"]
@@ -429,10 +450,10 @@ My Pro usage is shared between the Claude app and Claude Code, and every subagen
 | Install only the packs a project needs | Every installed skill's description loads every turn. |
 | Know what the MCP servers cost | Each server's tool list loads when its agent starts, so only agents that name a server pay for it (the orchestrator pays for none). `./agent-kit.sh doctor` lists the servers. Playwright and Chrome DevTools run headless. |
 | Run `./agent-kit.sh doctor` now and then | Shows skills and tokens per plugin, plus duplicate skill names. The kit is about 45 skills / ~4k tokens a turn, plus the Basic Memory plugin. |
-| Let subagents do the work | The orchestrator forces this. Its model is `sonnet`, so normal turns run on Sonnet, and it sends routine checks and clear-step edits to the Haiku `runner` and `coder-lite`. For handoffs and stuck problems, switch to the Opus `lead` (`claude --agent lead`, or `/model opus`). |
+| Let subagents do the work | The orchestrator forces this. Its model is `sonnet`, so normal turns run on Sonnet, and it sends routine checks and clear-step edits to the Haiku `runner` and `coder-lite`. For handoffs and stuck problems, switch to the Opus `lead` (`claude --agent lead`, or `/model opus`). The Opus `supervisor` is low-volume: it only reads reports and a run file, and every step's real work runs in Sonnet and Haiku subagents. |
 | Haiku Explore everywhere | The built-in Explore can run on Opus; `register` installs a Haiku one at user level, and `project` writes one per project. |
 | Check where the spend goes | `./agent-kit.sh usage` shows the Opus share. |
-| `/zsl:handoff`, then `/clear` | Long sessions get expensive and worse. The orchestrator suggests `/compact` or a handoff once a session passes roughly 120k tokens. |
+| `/zsl:handoff`, then `/clear` | Long sessions get expensive and worse. The orchestrator mentions it once at the end of a final report; a supervised run gets a fresh context per step for free. |
 | `REVIEW_MODEL=haiku` | Cheaper push reviews. |
 
 Before adding any new skill or plugin, run `./agent-kit.sh vet <path|owner/repo>`, which scans it without running anything and exits non-zero on a high-severity finding or any scan that could not run (`NOT SCANNED`); `sync` runs it on every vendored skill.
