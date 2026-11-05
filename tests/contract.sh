@@ -221,6 +221,37 @@ case14() { # lead agent and the sonnet default (offline: reads the generator and
   printf '{"agent_type":"lead","tool_name":"Write","tool_input":"oops"}' | python3 "$g" | grep -q '"deny"' || fail "guard did not deny lead with non-dict tool_input"
   ! grep -q 'setdefault("model", "opusplan")' "$KIT/agent-kit.sh" || fail "generator still emits opusplan"
 }
+case15() { # supervisor agent, guard rules, kit_block routing (offline)
+  local sp="$KIT/.claude/agents/supervisor.md" g="$WORK/guard-gen15.py" cwd="$KIT" ev blk
+  [ -f "$sp" ] || { fail "$sp missing (run ./agent-kit.sh self)"; return; }
+  grep -q '^model: opus$' "$sp" || fail "supervisor.md is not model: opus"
+  grep -q '^tools:.*Agent(orchestrator, Explore, kit-code:runner)' "$sp" || fail "supervisor.md Agent() list is wrong"
+  sed -n "/orchestrator-guard.py\" <<'PY'/,/^PY\$/p" "$KIT/agent-kit.sh" | sed '1d;$d' >"$g"
+  ev() { # agent_type tool path [extra-json]
+    printf '{"agent_type":"%s","cwd":"%s","tool_name":"%s","tool_input":{"file_path":"%s","command":"%s"}%s}' "$1" "$cwd" "$2" "$3" "${5:-}" "${4:-}" | env -u CLAUDE_PROJECT_DIR python3 "$g"; }
+  ev orchestrator Write "$KIT/x.md" | grep -q '"deny"' || fail "guard allowed orchestrator Write (no agent_id)"
+  ev orchestrator Write "$KIT/x.md" ',"agent_id":"a1"' | grep -q '"deny"' || fail "guard allowed orchestrator subagent Write (agent_id)"
+  ev coder Write "$KIT/x.md" ',"agent_id":"a1"' | grep -q '"deny"' && fail "guard denied a kit subagent"
+  ev supervisor Write "$cwd/docs/handoff/runs/x.md" | grep -q '"deny"' && fail "guard denied supervisor Write to the run file"
+  ev supervisor Write "docs/handoff/runs/x.md" | grep -q '"deny"' || fail "guard allowed supervisor relative path"
+  ev supervisor Write "$cwd/docs/handoff/runs/sub/x.md" | grep -q '"deny"' || fail "guard allowed supervisor nested path"
+  ev supervisor Write "$cwd/README.md" | grep -q '"deny"' || fail "guard allowed supervisor Write outside runs"
+  ev supervisor Edit "$cwd/docs/handoff/runs/x.md" | grep -q '"deny"' || fail "guard allowed supervisor Edit"
+  ev supervisor Bash "" "" | grep -q '"deny"' || fail "guard allowed supervisor Bash"
+  ev supervisor Write "$cwd/docs/handoff/runs/../x.md" | grep -q '"deny"' || fail "guard allowed supervisor traversal path"
+  ev supervisor Write "$cwd/docs/handoff/runs/x.txt" | grep -q '"deny"' || fail "guard allowed supervisor non-.md name"
+  ev supervisor MultiEdit "$cwd/docs/handoff/runs/x.md" | grep -q '"deny"' || fail "guard allowed supervisor MultiEdit"
+  mkdir -p "$WORK/p15/docs/handoff" "$WORK/out15"; ln -sfn "$WORK/out15" "$WORK/p15/docs/handoff/runs"
+  cwd="$WORK/p15" ev supervisor Write "$WORK/p15/docs/handoff/runs/x.md" | grep -q '"deny"' || fail "guard allowed supervisor symlinked runs dir"
+  ev orchestrator Bash "" ',"agent_id":"a1"' "sed -i s/a/b/ f" | grep -q '"deny"' || fail "guard allowed supervised orchestrator sed -i"
+  ev orchestrator Bash "" ',"agent_id":"a1"' "echo hi > f.txt" | grep -q '"deny"' || fail "guard allowed supervised orchestrator redirect"
+  ev supervisor Bash "" "" | grep -q 'orchestrator' || fail "supervisor deny does not point at the orchestrator"
+  blk="$(bash -c 'source <(sed -n "/^is_kit_dir()/,/^}/p;/^kit_block()/,/^}/p" "$1"); kit_block /tmp/x 0 1 1 1 0 a b c' _ "$KIT/agent-kit.sh" 2>/dev/null)"
+  grep -q 'claude --agent supervisor' <<<"$blk" || fail "kit_block has no supervisor line"
+  grep -q 'Between tasks' <<<"$blk" && fail "kit_block still has the standing Between tasks line"
+  grep -q '/clear' <<<"$blk" && fail "kit_block still mentions /clear"
+  return 0
+}
 case13() {
   need_ensure_env || return 77; local f h; fixture fx13; f="$FX"; h="$WORK/home13"; mkdir -p "$h"
   RC=0; ( cd "$KIT" && env HOME="$h" KIT_REPO=.. timeout 120 ./agent-kit.sh ensure "$f" --json </dev/null >"$OUT" 2>"$ERR" ) || RC=$?
@@ -243,6 +274,7 @@ run_case 8 "usage errors exit 2, write nothing" case8
 run_case 9 "network blocked never hangs" case9
 run_case 12 "agent basic-memory tool lists" case12
 run_case 14 "lead.md and model sonnet generated" case14
+run_case 15 "supervisor agent, guard and kit_block" case15
 run_case 13 "basic-memory missing => memory:missing" case13
 
 # 10: git history untouched in every fixture; 11: no .mcp.json / mcpServers anywhere

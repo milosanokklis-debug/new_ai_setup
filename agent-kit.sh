@@ -49,7 +49,7 @@ set -euo pipefail
 
 KIT_NAME="${KIT_NAME:-agent-kit}"
 METHOD="${METHOD:-agent-skills}"
-KIT_VERSION="0.8.0"
+KIT_VERSION="0.9.0"
 GITLEAKS_VERSION="${GITLEAKS_VERSION:-8.30.1}"
 AGENT_SKILLS_SHA="1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62"   # vercel-labs/agent-skills commit for the fetched guideline skills
 SEMGREP_VERSION="1.183.0"   # pinned for setup, vet and the reviewer's MCP server; update on purpose
@@ -741,8 +741,8 @@ def deny(reason):
 HANDOFF_NAME = re.compile(r"^(zsl-)?handoff[\w.-]*\.md$")  # /zsl:handoff writes zsl-handoff-YYYYMMDD-slug.md
 
 
-def lead_may_write(event):
-    """lead may Write only the /zsl:handoff output: <temp dir>/[zsl-]handoff*.md, absolute path, directly in the temp dir."""
+def may_write(event, folder, name_re):
+    """Write allowed only to an absolute path whose real location is directly in `folder` (already resolved) with a matching name."""
     tool_input = event.get("tool_input")
     if not isinstance(tool_input, dict):
         return False
@@ -750,8 +750,23 @@ def lead_may_write(event):
     if not isinstance(raw, str) or not os.path.isabs(raw):
         return False
     path = os.path.realpath(raw)
-    return (os.path.dirname(path) == os.path.realpath(tempfile.gettempdir())
-            and bool(HANDOFF_NAME.match(os.path.basename(path))))
+    return os.path.dirname(path) == folder and bool(name_re.match(os.path.basename(path)))
+
+
+RUN_NAME = re.compile(r"^[A-Za-z0-9][\w.-]*\.md$")
+
+
+def lead_may_write(event):
+    """lead may Write only the /zsl:handoff output: <temp dir>/[zsl-]handoff*.md."""
+    return may_write(event, os.path.realpath(tempfile.gettempdir()), HANDOFF_NAME)
+
+
+def supervisor_may_write(event):
+    """supervisor may Write only <project root>/docs/handoff/runs/<name>.md; a symlinked runs dir fails the realpath match."""
+    root = os.environ.get("CLAUDE_PROJECT_DIR") or event.get("cwd")
+    if not isinstance(root, str) or not os.path.isabs(root):
+        return False
+    return may_write(event, os.path.join(os.path.realpath(root), "docs", "handoff", "runs"), RUN_NAME)
 
 
 def main():
@@ -759,9 +774,16 @@ def main():
         event = json.load(sys.stdin)
     except ValueError:
         return
-    if event.get("agent_id"):
-        return
+    # Gate on agent_type alone: the rules apply to the main session and to subagents of that type.
+    # ASSUMPTION (unverified): a subagent spawned as "orchestrator" reports agent_type == "orchestrator".
+    # Kit subagents (coder, runner, ...) have other types and are unaffected.
     agent = event.get("agent_type")
+    if agent == "supervisor":
+        if event.get("tool_name") != "Write" or not supervisor_may_write(event):
+            deny("supervisor can write only its run file: docs/handoff/runs/<name>.md under the project "
+                 f"(absolute path, directly in that folder; blocked: {event.get('tool_name')}). "
+                 "Changes to files go to a fresh orchestrator subagent.")
+        return
     if agent == "lead":
         # The hook matcher covers only Edit|Write|MultiEdit|NotebookEdit|Bash, so "denied" means those tools;
         # lead's `tools:` frontmatter is what limits every other tool. Here lead may Write only the handoff file.
@@ -1623,7 +1645,9 @@ kit_block() { # project-dir design code memory orchestrator ui-guide plan-new pl
   fi
   [ "$code" = 1 ] && [ "$orch" = 1 ] && \
     printf -- '- Handoff document or a problem the cheaper agents are stuck on → `claude --agent lead` (Opus), or `/model opus`.\n'
-  printf -- '- New feature → %s; big feature → %s. Between tasks → %s, then /clear.\n' "$plan_new" "$plan_big" "$plan_handoff"
+  [ "$code" = 1 ] && [ "$orch" = 1 ] && \
+    printf -- '- Run a handoff end to end without check-ins → `claude --agent supervisor "run <handoff path>"`.\n'
+  printf -- '- New feature → %s; big feature → %s.\n' "$plan_new" "$plan_big"
   [ "$design" = 1 ] && [ "$uig" = 1 ] && \
     printf -- '- Questions about the UI skills (which one, what it says, how it fits this code) → `claude --agent ui-guide` (read-only).\n'
   printf -- '- Never install skills on your own; vet them first (`agent-kit.sh vet <owner/repo>`), suggest them and wait (find-skills is manual-only).\n'
@@ -1707,7 +1731,7 @@ MD
   fi
 
   if [ "$code" != 1 ]; then
-    rm -f "$dir/orchestrator.md" "$dir/lead.md"
+    rm -f "$dir/orchestrator.md" "$dir/lead.md" "$dir/supervisor.md"
     python3 - "$proj/.claude/settings.json" <<'PY'
 import json, sys
 p = sys.argv[1]; s = json.load(open(p))
@@ -1750,6 +1774,53 @@ MD
 - Reading more than a couple of files: spawn Explore. Commands, tests, git and logs: spawn the runner. You have no Bash yourself.
 - Give the answer or the decision first, then the reasons. Be brief. Use file_path:line references.
 - Never repeat secrets from .env or similar files.
+MD
+
+  # Opus agent that runs a handoff doc end to end, one fresh orchestrator per step: claude --agent supervisor
+  local stools="Agent(orchestrator, Explore, kit-code:runner), Read, Glob, Grep, Write, ToolSearch, AskUserQuestion, TaskCreate, TaskUpdate, TaskList, TaskGet"
+  [ "$memory" = 1 ] && stools+=", mcp__basic-memory__bm_search, mcp__basic-memory__bm_read, mcp__basic-memory__bm_list, mcp__basic-memory__bm_find, mcp__basic-memory__bm_context, mcp__basic-memory__bm_write"
+  cat > "$dir/supervisor.md" <<MD
+---
+name: supervisor
+description: Opus session that runs a handoff document end to end, one fresh orchestrator subagent per step, without check-ins. Start it with claude --agent supervisor "run docs/handoff/<file>.md".
+model: opus
+effort: medium
+tools: $stools
+---
+MD
+  cat >> "$dir/supervisor.md" <<'MD'
+<!-- generated by agent-kit.sh project; re-running it overwrites this file -->
+You run a handoff document from start to finish. You plan and dispatch; you never change project files. Each step goes to a NEW `orchestrator` subagent, so every step starts with a clean context. You can Write only your run file (a hook blocks every other path, and Bash).
+
+## Start
+- Read the handoff fully. Start with `run <path>` or `resume docs/handoff/runs/<slug>.md`. On resume, continue from the first step that is not done.
+- Write the run file `docs/handoff/runs/<slug>.md`: numbered steps, each with goal, files or area, acceptance check and status (todo|doing|done|blocked); a "Limits" section copied from the handoff (what you may and may not do); a "Decisions" log. Mirror the steps in the task list.
+- Pre-flight once, through the runner: Basic Memory reachable (if not, stop and tell the user), right branch, state of the working tree.
+
+## Loop
+- For the next todo step, spawn a NEW orchestrator. Never resume, fork or SendMessage an old one. The prompt is self-contained: the step, the relevant handoff excerpts, the decisions so far, the limits, and this report format (20 lines or fewer): `STATUS: done|blocked|needs-decision`, what changed, checks and their real result, commit hash, open questions with options. Tell it that it is supervised.
+- needs-decision: decide it yourself from the handoff, the code and sensible defaults. Use Explore or the runner for evidence. Log the decision, then dispatch a fresh orchestrator.
+- A failed step gets one fresh retry with your diagnosis. A second failure is a stop condition.
+- After each step update the run file and the task list, then go straight on. Never ask "shall I continue". Never suggest /clear or /zsl:handoff during a run.
+- Keep your own context small: read reports, not code.
+
+## Finish
+- Spawn a fresh orchestrator to run the reviewer, the simplicity-reviewer and the full checks over the whole branch, and to fix what they find.
+- Record the decisions in Basic Memory.
+- Give one short report: what is done, how it was verified, what is left over, and the run-file path.
+
+## Stop conditions
+These are the only times you wait for the user (AskUserQuestion if the session is interactive, otherwise stop and write the reason at the top of the run file):
+- an action the handoff does not explicitly authorise: push, force-push, merge to main, PRs, deleting branches or data, publishing, installing plugins or skills, files marked off-limits. Skipping a gate (--no-verify, SKIP_REVIEW, SKIP_VERIFY) is never allowed.
+- a change of scope
+- a step that fails twice, or checks that stay red after a fix
+- a secret you need
+- Basic Memory unavailable
+- an orchestrator reports it cannot spawn agents
+
+Nesting (you spawn orchestrators, which spawn coders) needs Claude Code >= 2.1.219 (CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, default 3). Your bm_write is not path-guarded: use it only for the decision records.
+
+Never repeat secrets from .env or similar files. Write for the user in plain, short sentences.
 MD
 
   {
@@ -1796,7 +1867,7 @@ MD
     cat <<'MD'
 - Run the reviewer and simplicity-reviewer once per finished batch of tasks, in parallel, before calling the work done or committing; not after every task and send blockers back to the agent that wrote the code. Have the runner run the project's checks (scripts/verify.sh if it exists, otherwise the tests) and report the real result.
 - Report briefly: what changed, what was verified and how, and what's left.
-- Hand off to the lead (Opus) for a handoff document or a problem you or the coder are stuck on: tell the user to run `claude --agent lead` (or `/model opus`) and give them a short summary to paste.
+- Complete every task in the request without pausing to ask whether to continue. Ask only for decisions that are the user's to make.
 
 ## Rules
 - Don't change files yourself, not even a one-line fix. Delegate it. If the user wants to work hands-on, tell them to restart with `claude --agent solo`.
@@ -1807,12 +1878,21 @@ MD
 - Never install plugins or skills on your own; suggest them and wait. Vet a skill or plugin before suggesting it: run `agent-kit.sh vet <owner/repo>` from the kit folder (or ask the user to). Never suggest one with a high-severity finding.
 - Write for the user in plain, short sentences. Use file_path:line references.
 MD
-    printf -- '- Between unrelated tasks, suggest %s and then /clear. When a session gets long (roughly over 120k tokens), suggest /compact, or %s and then /clear.\n' "$plan_handoff" "$plan_handoff"
+    printf -- '- Mention once, at the end of your final report, that the user can run %s and then /clear before unrelated work, or `claude --agent supervisor "run <handoff path>"` for multi-step work. Never stop mid-task to suggest it.\n' "$plan_handoff"
+    cat <<'MD'
+
+## When supervised
+The dispatch prompt says when a supervisor started you (a fresh orchestrator per step). Then:
+- The supervisor's prompt carries the user's authority, within the limits it states. If the limits are silent: commit locally at the end of the step on the working branch, and never push.
+- Finish the whole step without pausing. Put questions in the report, never ask them mid-step.
+- Return the report format the prompt asks for (STATUS: done|blocked|needs-decision, what changed, checks and their real result, commit hash, open questions with options), in 20 lines or fewer.
+- Don't suggest /clear, /compact, /zsl:handoff or `claude --agent lead`.
+MD
     if is_kit_dir "$proj"; then cat <<'MD'
 
 ## This repo is the kit
 The plugins your agents run come from this checkout's plugins/ (the kit marketplace points here). So you can improve the kit with your own agents:
-- Changes to agent-kit.sh, plugins/, .claude-plugin/marketplace.json and tests/ go to the coder like any other code. A change under plugins/ or to marketplace.json also needs KIT_VERSION in agent-kit.sh and every local plugin version bumped to match; have the runner run `tests/version-bump.sh`, `bash -n agent-kit.sh tests/*.sh`, `tests/skills.sh` and `tests/contract.sh --cases 8,10,11,12`.
+- Changes to agent-kit.sh, plugins/, .claude-plugin/marketplace.json and tests/ go to the coder like any other code. A change under plugins/ or to marketplace.json also needs KIT_VERSION in agent-kit.sh and every local plugin version bumped to match; have the runner run `tests/version-bump.sh`, `bash -n agent-kit.sh tests/*.sh`, `tests/skills.sh` and `tests/contract.sh --cases 8,10,11,12,14,15`.
 - After those changes pass review and checks, you may run `./agent-kit.sh self` yourself (it is the one install command you may run unasked): it reloads this repo's own packs from the checkout and rewrites the files under .claude/agents. Then tell the user to run /reload-plugins or restart Claude Code: plugins load in place from this checkout, and agents load when a session starts. It never installs anything from outside the kit's own marketplace.json.
 - Don't let an agent hand-edit .claude/agents/*.md or the agent-kit block in CLAUDE.md: `self` regenerates them. Change the generator in agent-kit.sh instead.
 - A broken orchestrator-guard or agent file can lock you out; if that happens, tell the user to fix it with `claude --agent solo`.
