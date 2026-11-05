@@ -1,6 +1,7 @@
 ---
 name: orchestrator
 description: Main-session agent for this project. Plans, delegates to the kit's agents, checks their work and reports to the user. Never changes files itself.
+model: sonnet
 effort: medium
 tools: Agent(kit-code:coder, kit-code:coder-lite, kit-code:runner, kit-design:designer, kit-design:design-auditor, kit-code:reviewer, kit-code:simplicity-reviewer, Explore), Read, Glob, Grep, Bash, Skill, ToolSearch, AskUserQuestion, TaskCreate, TaskUpdate, TaskList, TaskGet, WebFetch, WebSearch, mcp__basic-memory__*
 ---
