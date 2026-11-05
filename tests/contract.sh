@@ -207,7 +207,7 @@ case14() { # lead agent and the sonnet default (offline: reads the generator and
   [ -f "$l" ] || { fail "$l missing (run ./agent-kit.sh self)"; return; }
   grep -q '^model: opus$' "$l" || fail "lead.md is not model: opus"
   grep -q '^tools:.*Agent(Explore, kit-code:runner)' "$l" || fail "lead.md can spawn more than Explore and runner"
-  grep -q 'setdefault("model", "sonnet")' "$KIT/agent-kit.sh" || fail 'generator does not default to "model": "sonnet"'
+  ! grep -q 'setdefault("model"' "$KIT/agent-kit.sh" || fail "generator still writes a settings model key"
   local g="$WORK/guard-gen.py" t ev
   sed -n "/orchestrator-guard.py\" <<'PY'/,/^PY\$/p" "$KIT/agent-kit.sh" | sed '1d;$d' >"$g"
   cmp -s "$g" "$KIT/plugins/kit-core/scripts/orchestrator-guard.py" || fail "generated guard differs from plugins/kit-core/scripts/orchestrator-guard.py"
@@ -225,6 +225,10 @@ case15() { # supervisor agent, guard rules, kit_block routing (offline)
   local sp="$KIT/.claude/agents/supervisor.md" g="$WORK/guard-gen15.py" cwd="$KIT" ev blk
   [ -f "$sp" ] || { fail "$sp missing (run ./agent-kit.sh self)"; return; }
   grep -q '^model: opus$' "$sp" || fail "supervisor.md is not model: opus"
+  grep -q '^tools:.*Read, Glob, Grep' "$sp" || fail "supervisor.md lacks Read, Glob, Grep"
+  grep -q '^model: sonnet$' "$KIT/.claude/agents/orchestrator.md" || fail "orchestrator.md is not model: sonnet"
+  grep -q '"agent": "supervisor"' "$KIT/.claude/settings.json" || fail "settings.json agent is not supervisor"
+  ! grep -q '"model"' "$KIT/.claude/settings.json" || fail "settings.json has a conflicting model key"
   grep -q '^tools:.*Agent(orchestrator, Explore, kit-code:runner)' "$sp" || fail "supervisor.md Agent() list is wrong"
   sed -n "/orchestrator-guard.py\" <<'PY'/,/^PY\$/p" "$KIT/agent-kit.sh" | sed '1d;$d' >"$g"
   ev() { # agent_type tool path [extra-json]
@@ -234,11 +238,14 @@ case15() { # supervisor agent, guard rules, kit_block routing (offline)
   ev coder Write "$KIT/x.md" ',"agent_id":"a1"' | grep -q '"deny"' && fail "guard denied a kit subagent"
   ev supervisor Write "$cwd/docs/handoff/runs/x.md" | grep -q '"deny"' && fail "guard denied supervisor Write to the run file"
   ev supervisor Write "docs/handoff/runs/x.md" | grep -q '"deny"' || fail "guard allowed supervisor relative path"
+  ev supervisor Write "$cwd/docs/handoff/x.md" | grep -q '"deny"' && fail "guard denied supervisor Write to docs/handoff/x.md"
+  ev supervisor Write "$cwd/docs/handoff/sub/x.md" | grep -q '"deny"' || fail "guard allowed supervisor docs/handoff/sub/x.md"
+  ev supervisor Write "$cwd/docs/x.md" | grep -q '"deny"' || fail "guard allowed supervisor docs/x.md"
   ev supervisor Write "$cwd/docs/handoff/runs/sub/x.md" | grep -q '"deny"' || fail "guard allowed supervisor nested path"
   ev supervisor Write "$cwd/README.md" | grep -q '"deny"' || fail "guard allowed supervisor Write outside runs"
   ev supervisor Edit "$cwd/docs/handoff/runs/x.md" | grep -q '"deny"' || fail "guard allowed supervisor Edit"
   ev supervisor Bash "" "" | grep -q '"deny"' || fail "guard allowed supervisor Bash"
-  ev supervisor Write "$cwd/docs/handoff/runs/../x.md" | grep -q '"deny"' || fail "guard allowed supervisor traversal path"
+  ev supervisor Write "$cwd/docs/handoff/runs/../../x.md" | grep -q '"deny"' || fail "guard allowed supervisor traversal path"
   ev supervisor Write "$cwd/docs/handoff/runs/x.txt" | grep -q '"deny"' || fail "guard allowed supervisor non-.md name"
   ev supervisor MultiEdit "$cwd/docs/handoff/runs/x.md" | grep -q '"deny"' || fail "guard allowed supervisor MultiEdit"
   mkdir -p "$WORK/p15/docs/handoff" "$WORK/out15"; ln -sfn "$WORK/out15" "$WORK/p15/docs/handoff/runs"

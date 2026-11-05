@@ -83,11 +83,12 @@ def lead_may_write(event):
 
 
 def supervisor_may_write(event):
-    """supervisor may Write only <project root>/docs/handoff/runs/<name>.md; a symlinked runs dir fails the realpath match."""
+    """supervisor may Write only <project root>/docs/handoff/<name>.md or docs/handoff/runs/<name>.md; a symlinked folder fails the realpath match."""
     root = os.environ.get("CLAUDE_PROJECT_DIR") or event.get("cwd")
     if not isinstance(root, str) or not os.path.isabs(root):
         return False
-    return may_write(event, os.path.join(os.path.realpath(root), "docs", "handoff", "runs"), RUN_NAME)
+    base = os.path.join(os.path.realpath(root), "docs", "handoff")
+    return may_write(event, base, RUN_NAME) or may_write(event, os.path.join(base, "runs"), RUN_NAME)
 
 
 def main():
@@ -101,8 +102,8 @@ def main():
     agent = event.get("agent_type")
     if agent == "supervisor":
         if event.get("tool_name") != "Write" or not supervisor_may_write(event):
-            deny("supervisor can write only its run file: docs/handoff/runs/<name>.md under the project "
-                 f"(absolute path, directly in that folder; blocked: {event.get('tool_name')}). "
+            deny("supervisor can write only a handoff doc or its run file: docs/handoff/<name>.md or docs/handoff/runs/<name>.md under the project "
+                 f"(absolute path, directly in one of those folders; blocked: {event.get('tool_name')}). "
                  "Changes to files go to a fresh orchestrator subagent.")
         return
     if agent == "lead":
