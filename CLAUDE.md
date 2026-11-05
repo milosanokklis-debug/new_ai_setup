@@ -4,7 +4,7 @@
 Before anything else, search Basic Memory (the `basic-memory` server) for this repo and task. If `basic-memory` is unavailable, stop and say so instead of continuing.
 Notes for this repo live under `repos/new_ai_setup/`; notes that span repos live under `shared/`.
 ## Working with the agent kit
-- Sessions here run as the orchestrator agent (.claude/agents/orchestrator.md): it plans and delegates; the coder and designer agents change files. Hands-on instead: `claude --agent solo`.
+- Sessions here run as the supervisor agent by default (.claude/agents/supervisor.md). Plain interactive work: `claude --agent orchestrator` (.claude/agents/orchestrator.md): it plans and delegates; the coder and designer agents change files. Hands-on instead: `claude --agent solo`.
 - Handoff document or a problem the cheaper agents are stuck on → `claude --agent lead` (Opus), or `/model opus`.
 - Run a handoff end to end without check-ins → `claude --agent supervisor "run <handoff path>"`.
 - New feature → /zsl:grill-me; big feature → /zsl:to-prd.

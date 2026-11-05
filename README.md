@@ -3,7 +3,7 @@
 My personal Claude Code setup. One script, `agent-kit.sh`, turns any folder into a project that:
 
 - runs entirely on my **Claude Pro** login (no API key, no other AI accounts)
-- runs every session as a **Sonnet orchestrator** (model `sonnet`) that hands the work to cheaper **subagents** (Haiku, and Sonnet for the bigger jobs). It can't edit files itself, so it has to delegate. An **Opus `lead`** is one command away for handoffs and stuck problems, and an **Opus `supervisor`** runs a whole handoff step by step
+- starts every session as an **Opus `supervisor`** that runs a whole handoff step by step, with a fresh **Sonnet `orchestrator`** for each step. For plain interactive work, `claude --agent orchestrator` gives a **Sonnet orchestrator** (model `sonnet`) that hands the work to cheaper **subagents** (Haiku, and Sonnet for the bigger jobs). It can't edit files itself, so it has to delegate. An **Opus `lead`** is one command away for handoffs and stuck problems
 - **remembers** decisions between sessions with Basic Memory
 - can't push code that leaks a secret, fails its tests, or fails an **independent review**
 
@@ -13,7 +13,7 @@ This repo is also a Claude Code plugin marketplace. The `plugins/` folder holds 
 
 ## What's new in 0.9
 
-- **`supervisor` (Opus).** Runs a handoff document end to end without check-ins: `claude --agent supervisor "run docs/handoff/<file>.md"`. It writes a run file (`docs/handoff/runs/<slug>.md`: steps, limits, decisions) and spawns a **fresh `orchestrator` subagent for each step**, so every step starts with a clean context (the same effect as `/clear`). Continue an interrupted run with `resume docs/handoff/runs/<slug>.md`. The default agent in `settings.json` is still the orchestrator.
+- **`supervisor` (Opus).** Runs a handoff document end to end without check-ins: `claude --agent supervisor "run docs/handoff/<file>.md"`. It writes a run file (`docs/handoff/runs/<slug>.md`: steps, limits, decisions) and spawns a **fresh `orchestrator` subagent for each step**, so every step starts with a clean context (the same effect as `/clear`). Continue an interrupted run with `resume docs/handoff/runs/<slug>.md`. The default agent in `settings.json` is now the supervisor; plain work runs with `claude --agent orchestrator`.
 - It waits for you only on a stop condition: an action the handoff does not authorise (push, PR, merge, delete, publish, install, off-limits files), a scope change, a step that fails twice, a secret it needs, or Basic Memory being unavailable. It never skips a gate (`--no-verify`, `SKIP_REVIEW`, `SKIP_VERIFY`).
 - The orchestrator has a "supervised" mode: it finishes the whole step, commits locally (never pushes, unless the limits say otherwise) and returns a short report. Unsupervised, it completes every task in the request without pausing and mentions `/zsl:handoff` + `/clear` once, at the end.
 - The guard now keys on `agent_type` alone: orchestrator rules apply to the main session and to orchestrator subagents. `supervisor` can Write only `docs/handoff/runs/<name>.md`. Nesting needs Claude Code >= 2.1.219 (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`, default 3). The `agent_type` a subagent reports is assumed to be `orchestrator`; it is not verified yet.
@@ -145,9 +145,9 @@ flowchart TB
     me --> main
 
     subgraph CC["Claude Code · Pro login"]
-        sup["supervisor agent (optional)<br/>Opus · runs a handoff end to end<br/>fresh orchestrator per step"]
+        sup["Main session = supervisor agent (default)<br/>Opus · runs a handoff end to end<br/>fresh orchestrator per step"]
         sup -.-> main
-        main["Main session = orchestrator agent<br/>Sonnet · plans and delegates<br/>can't edit files"]
+        main["orchestrator agent (claude --agent orchestrator)<br/>Sonnet · plans and delegates<br/>can't edit files"]
 
         subgraph design["kit-design"]
             designer["designer<br/>Sonnet · builds UI"]
@@ -178,7 +178,7 @@ flowchart TB
 
 | Piece | What it is | Where it lives |
 |---|---|---|
-| **Main session** | The Claude Code session I talk to. It runs as the `orchestrator` agent: it plans and hands work to subagents, and has no tools to edit files. | `.claude/agents/orchestrator.md` in each project |
+| **Main session** | The Claude Code session I talk to. It runs as the `supervisor` agent by default (Opus; runs handoff docs step by step). Plain work runs as the `orchestrator` agent (`claude --agent orchestrator`): it plans and hands work to subagents, and has no tools to edit files. | `.claude/agents/orchestrator.md` in each project |
 | **Subagents** | Specialists with their own instructions, tools and model. Each starts with a clean context, so they're cheap. | `plugins/kit-*/agents/*.md` |
 | **MCP servers** | Tools agents call: a headless browser (playwright, chrome-devtools), current library docs (context7), shadcn and Motion docs, Semgrep. Each plugin ships its own in `.mcp.json`; an agent gets one only if its `tools:` line names it (`mcp__plugin_<plugin>_<server>__*`). The orchestrator gets none. | `plugins/kit-*/.mcp.json` |
 | **Skills** | Reusable know-how (how to do TDD, how to use shadcn…). Only the one-line description loads until a skill is used. | the plugins and their dependencies |
@@ -315,8 +315,8 @@ sequenceDiagram
 ```
 
 - **Start a feature** with `/zsl:grill-me` (small) or `/zsl:to-prd` (big). Claude asks questions until the plan is clear.
-- **The main session delegates, always.** It runs as the `orchestrator` agent (set by `"agent": "orchestrator"` in `.claude/settings.json`). It has no Edit/Write tools, can only spawn the kit's agents (never the built-in general-purpose one), and a hook in `kit-core` blocks Bash commands that write files (`sed -i`, `>` redirects, `tee`, Python/Node scripts that write). Anything users see goes to the designer, and the design-auditor checks it afterwards.
-- **Small fix, don't want the ceremony?** `claude --agent solo` gives a normal hands-on session with every tool. The guard only applies to the orchestrator.
+- **The orchestrator delegates, always.** Plain work runs as the `orchestrator` agent (`claude --agent orchestrator`; the default session is the `supervisor`, set by `"agent": "supervisor"` in `.claude/settings.json`). The orchestrator has no Edit/Write tools, can only spawn the kit's agents (never the built-in general-purpose one), and a hook in `kit-core` blocks Bash commands that write files (`sed -i`, `>` redirects, `tee`, Python/Node scripts that write). Anything users see goes to the designer, and the design-auditor checks it afterwards.
+- **Small fix, don't want the ceremony?** `claude --agent solo` gives a normal hands-on session with every tool. The guard applies to the orchestrator and the supervisor.
 - **Between tasks:** `/zsl:handoff`, then `/clear`. My usage panel said most of my usage came from not clearing between tasks.
 - **Never let Claude install skills on its own.** `find-skills` is manual-only. Use it to shop, then add the good ones to the kit.
 
@@ -475,7 +475,7 @@ The packs pull skills from a few third-party GitHub marketplaces (Addy Osmani, H
 | Basic Memory tools or briefing missing | Approve the server when asked, then `/basic-memory:bm-status`. Re-run `./agent-kit.sh setup` if `basic-memory` isn't found |
 | "couldn't turn on branch protection" | Private repo on a free plan. Make it public or skip it. The hooks still work. |
 | A plugin change isn't showing up | `claude plugin marketplace update agent-kit`, then restart Claude Code |
-| The main session does the work itself, or never uses the designer | Re-run `./agent-kit.sh project <path>`: older projects have no orchestrator and may be missing `kit-design`. Check `"agent": "orchestrator"` in `.claude/settings.json` |
+| The main session does the work itself, or never uses the designer | Re-run `./agent-kit.sh project <path>`: older projects have no orchestrator and may be missing `kit-design`. Check `"agent": "supervisor"` in `.claude/settings.json` (`orchestrator` for plain work) |
 | "The orchestrator doesn't change files itself" | Working as intended. Let it delegate, or restart with `claude --agent solo` |
 
 ---

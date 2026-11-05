@@ -826,8 +826,7 @@ Start a new project (git, GitHub repo, gates, kit, Basic Memory): \`./agent-kit.
 Wire an existing project to the kit only (or update one): \`./agent-kit.sh project <path>\`.
 Leave a pack out with \`--no-design\` (or \`--no-ui\`) or \`--no-code\`.
 
-Sessions run as an orchestrator agent (model sonnet) that delegates to
-coder/designer (Sonnet) and runner/coder-lite (Haiku); \`claude --agent lead\` (Opus) writes the handoff and answers what the cheaper agents could not; a hook stops it changing files itself. Hands-on session instead: \`claude --agent solo\`.
+Sessions start as the supervisor agent (Opus), which runs a handoff doc end to end with a fresh orchestrator per step (\`claude --agent supervisor "run <handoff path>"\`). Plain interactive work: \`claude --agent orchestrator\` (model sonnet), which delegates to coder/designer (Sonnet) and runner/coder-lite (Haiku); \`claude --agent lead\` (Opus) writes the handoff and answers what the cheaper agents could not; a hook stops the orchestrator changing files itself. Hands-on session instead: \`claude --agent solo\`.
 
 ## Green light before every push
 
@@ -1637,7 +1636,7 @@ kit_block() { # project-dir design code memory orchestrator ui-guide plan-new pl
   fi
   printf '## Working with the agent kit\n'
   if [ "$code" = 1 ] && [ "$orch" = 1 ]; then
-    printf -- '- Sessions here run as the orchestrator agent (.claude/agents/orchestrator.md): it plans and delegates; the coder and designer agents change files. Hands-on instead: `claude --agent solo`.\n'
+    printf -- '- Sessions here run as the supervisor agent by default (.claude/agents/supervisor.md). Plain interactive work: `claude --agent orchestrator` (.claude/agents/orchestrator.md): it plans and delegates; the coder and designer agents change files. Hands-on instead: `claude --agent solo`.\n'
   else
     [ "$code" = 1 ] && printf -- '- Code work → kit-code:coder agent. Before merging → kit-code:reviewer agent.\n'
     [ "$design" = 1 ] && \
@@ -1735,7 +1734,7 @@ MD
     python3 - "$proj/.claude/settings.json" <<'PY'
 import json, sys
 p = sys.argv[1]; s = json.load(open(p))
-if s.get("agent") == "orchestrator":
+if s.get("agent") in ("orchestrator", "supervisor"):
     del s["agent"]
 # remove only "opusplan", which the old kit wrote; a deliberate "sonnet" is the user's and stays
 if s.get("model") == "opusplan":
@@ -1903,7 +1902,8 @@ MD
   python3 - "$proj/.claude/settings.json" <<'PY'
 import json, sys
 p = sys.argv[1]; s = json.load(open(p))
-s["agent"] = "orchestrator"
+# the default main session is the supervisor (it is generated in this branch); plain work: claude --agent orchestrator
+s["agent"] = "supervisor"
 # Sonnet for the main session; Opus is the lead agent. Never overwrite the user's own choice.
 if s.setdefault("model", "sonnet") != "sonnet":
     print("   note: .claude/settings.json already sets model %r; left as is (the kit suggests sonnet)" % s["model"])
@@ -2054,7 +2054,7 @@ PY
   # 5. Basic Memory: its own notes project, the MCP server, and the plugin's session hooks
   [ "$memory" = 1 ] && setup_basic_memory "$proj"
 
-  # 6. orchestration: the main session runs as an orchestrator agent with no file-editing tools
+  # 6. orchestration: the default main session is the supervisor agent; plain work runs as the orchestrator (no file-editing tools)
   write_session_agents "$proj" "$design" "$code" "$memory" "$plan_new" "$plan_big" "$plan_handoff"
 
   # 7. short routing note — CLAUDE.md is loaded every turn, so keep it tiny. Rewritten on every run.
@@ -2082,7 +2082,7 @@ PY
   fi
 
   say "done. Commit .claude/, .mcp.json, AGENTS.md and CLAUDE.md. Then open Claude Code there and run /context."
-  if [ "$code" = 1 ]; then say "sessions there start as the orchestrator; for a hands-on session run: claude --agent solo"; fi
+  if [ "$code" = 1 ]; then say "sessions there start as the supervisor; for plain work run: claude --agent orchestrator; for a hands-on session run: claude --agent solo"; fi
 }
 
 kit_origin_repo() { # prints owner/repo from the kit's GitHub origin remote, or nothing

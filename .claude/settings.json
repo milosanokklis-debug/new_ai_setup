@@ -59,7 +59,7 @@
     }
   },
   "outputStyle": "basic-memory",
-  "agent": "orchestrator",
+  "agent": "supervisor",
   "basicMemory": {
     "primaryProject": "new-ai-setup",
     "captureFolder": "sessions",
