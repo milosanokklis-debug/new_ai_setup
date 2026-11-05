@@ -13,15 +13,20 @@ import sys
 import tempfile
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+AGENT_TOOLS = {"Agent", "Task"}
+SUPERVISOR_SPAWN = {"orchestrator", "Explore", "kit-code:runner", "runner"}
+READ_ONLY_AGENTS = {"runner", "kit-code:runner", "Explore"}
 INTERPRETER = re.compile(r"\b(python3?|node|bun|deno|ruby)\b")
 SCRIPT_WRITES = re.compile(
     r"""open\([^)]*['"][wax]b?\+?['"]|\.write_(text|bytes)\(|\b(writeFile|appendFile)(Sync)?\(|File\.write\(""")
 SHELL_WRITES = [
     (re.compile(r"\bsed\s+(?:[^|;&\n]*\s)?(?:-[a-zA-Z]*i|--in-place)"), "sed -i"),
     (re.compile(r"\bperl\s+(?:[^|;&\n]*\s)?-[a-zA-Z]*i"), "perl -i"),
-    (re.compile(r"\btee\s+(?:-a\s+)?(?!/dev/null)[^\s|;&]"), "tee to a file"),
-    # > or >> to a file; not 2>/dev/null, >&2, 2>&1, =>, ->, or a comparison inside quotes
-    (re.compile(r"(?<![0-9&<>=-])>>?(?!&|\s*/dev/null|=)"), "a > redirect to a file"),
+    (re.compile(r"\btee\s+(?:-a\s+)?(?!/dev/(?:null|stderr|stdout)\b)[^\s|;&]"), "tee to a file"),
+    # > or >> to a file; not /dev/null|stderr|stdout, >&2, 2>&1, =>, ->, or a comparison inside quotes
+    (re.compile(r"(?<![&<>=-])>>?(?!&|\s*/dev/(?:null|stderr|stdout)\b|=)"), "a > redirect to a file"),
+    # &> and &>> send stdout and stderr to a file
+    (re.compile(r"&>>?(?!\s*/dev/(?:null|stderr|stdout)\b)"), "a &> redirect to a file"),
 ]
 
 
@@ -32,7 +37,7 @@ def split_heredocs(cmd):
         line = lines[i]
         kept.append(line)
         i += 1
-        for m in re.finditer(r"<<-?\s*(['\"]?)([A-Za-z_]\w*)\1", line):
+        for m in re.finditer(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_]\w*)\1", line):
             body = []
             while i < len(lines) and lines[i].strip() != m.group(2):
                 body.append(lines[i])
@@ -100,15 +105,38 @@ def main():
     # ASSUMPTION (unverified): a subagent spawned as "orchestrator" reports agent_type == "orchestrator".
     # Kit subagents (coder, runner, ...) have other types and are unaffected.
     agent = event.get("agent_type")
+    if agent in READ_ONLY_AGENTS:
+        # runner/Explore are read-only; this holds with or without agent_id (subagent or main thread)
+        tool = event.get("tool_name", "")
+        what = tool if tool in EDIT_TOOLS else None
+        if tool == "Bash":
+            what = bash_write((event.get("tool_input") or {}).get("command", ""))
+        if what:
+            who = "Explore" if agent == "Explore" else "runner"
+            deny(f"{who} is read-only (blocked: {what}); return STATUS: blocked and let the orchestrator "
+                 "send the change to kit-code:coder.")
+        return
     if agent == "supervisor":
+        if event.get("tool_name") in AGENT_TOOLS:
+            # ASSUMPTION (unverified until a live test): the spawn tool is named "Agent" (older builds: "Task")
+            # and tool_input.subagent_type holds the requested agent type.
+            ti = event.get("tool_input")
+            sub = ti.get("subagent_type") if isinstance(ti, dict) else None
+            if sub not in SUPERVISOR_SPAWN:
+                deny(f"supervisor may spawn only orchestrator, Explore or kit-code:runner (blocked: "
+                     f"{'no subagent_type' if not sub else repr(sub)}). "
+                     "Code changes go to a fresh orchestrator subagent, which spawns the coder.")
+            return
         if event.get("tool_name") != "Write" or not supervisor_may_write(event):
             deny("supervisor can write only a handoff doc or its run file: docs/handoff/<name>.md or docs/handoff/runs/<name>.md under the project "
                  f"(absolute path, directly in one of those folders; blocked: {event.get('tool_name')}). "
                  "Changes to files go to a fresh orchestrator subagent.")
         return
     if agent == "lead":
-        # The hook matcher covers only Edit|Write|MultiEdit|NotebookEdit|Bash, so "denied" means those tools;
-        # lead's `tools:` frontmatter is what limits every other tool. Here lead may Write only the handoff file.
+        # The hook matcher covers Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task; every other tool is
+        # not hooked, so lead's `tools:` frontmatter is what limits it. Here lead may Write only the handoff file.
+        if event.get("tool_name") in AGENT_TOOLS:
+            return  # spawns are bounded by lead's Agent(...) allowlist
         if event.get("tool_name") != "Write" or not lead_may_write(event):
             deny("lead can write only the handoff file: [zsl-]handoff*.md directly in the temp directory "
                  "(/zsl:handoff output, absolute path), nothing else "

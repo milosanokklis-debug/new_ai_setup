@@ -229,7 +229,6 @@ case15() { # supervisor agent, guard rules, kit_block routing (offline)
   grep -q '^model: sonnet$' "$KIT/.claude/agents/orchestrator.md" || fail "orchestrator.md is not model: sonnet"
   grep -q '"agent": "supervisor"' "$KIT/.claude/settings.json" || fail "settings.json agent is not supervisor"
   ! grep -q '"model"' "$KIT/.claude/settings.json" || fail "settings.json has a conflicting model key"
-  grep -q '^tools:.*Agent(orchestrator, Explore, kit-code:runner)' "$sp" || fail "supervisor.md Agent() list is wrong"
   sed -n "/orchestrator-guard.py\" <<'PY'/,/^PY\$/p" "$KIT/agent-kit.sh" | sed '1d;$d' >"$g"
   ev() { # agent_type tool path [extra-json]
     printf '{"agent_type":"%s","cwd":"%s","tool_name":"%s","tool_input":{"file_path":"%s","command":"%s"}%s}' "$1" "$cwd" "$2" "$3" "${5:-}" "${4:-}" | env -u CLAUDE_PROJECT_DIR python3 "$g"; }
@@ -267,6 +266,66 @@ case13() {
   jcheck 'd["memory"]=="missing"'
 }
 
+case16() { # generated agents: supervisor allowlist, orchestrator and supervisor rules (offline)
+  local sp="$KIT/.claude/agents/supervisor.md" or="$KIT/.claude/agents/orchestrator.md" a l
+  [ -f "$sp" ] && [ -f "$or" ] || { fail "agent files missing (run ./agent-kit.sh self)"; return; }
+  l="$(grep '^tools:' "$sp")"
+  for a in orchestrator kit-code:coder kit-code:coder-lite kit-code:runner kit-code:reviewer kit-code:simplicity-reviewer Explore; do
+    grep -q "Agent([^)]*\\b$a[,)]" <<<"$l" || fail "supervisor.md Agent() list lacks $a"
+  done
+  if grep -q 'kit-design:designer' "$or"; then
+    grep -q 'Agent([^)]*kit-design:designer' <<<"$l" || fail "supervisor.md Agent() list lacks kit-design:designer"
+    grep -q 'Agent([^)]*kit-design:design-auditor' <<<"$l" || fail "supervisor.md Agent() list lacks kit-design:design-auditor"
+  fi
+  grep -q 'agent unavailable' "$or" && grep -q 'STATUS: blocked' "$or" || fail "orchestrator.md lacks the agent-unavailable => blocked rule"
+  grep -q 'REVIEW: reviewer=<ran|not-run> simplicity=<ran|not-run>' "$or" || fail "orchestrator.md lacks the REVIEW line"
+  grep -q 'REVIEW: reviewer=' "$sp" || fail "supervisor.md report format lacks REVIEW"
+  grep -qi 'pre-flight probe' "$sp" || fail "supervisor.md lacks the pre-flight probe"
+  grep -q 'Never accept `STATUS: done` with `REVIEW: not-run`' "$sp" || fail "supervisor.md lacks the no-done-without-review rule"
+  return 0
+}
+case17() { # guard: supervisor spawns, read-only runner/Explore (offline)
+  local g="$WORK/guard-gen17.py" ev
+  sed -n "/orchestrator-guard.py\" <<'PY'/,/^PY\$/p" "$KIT/agent-kit.sh" | sed '1d;$d' >"$g"
+  grep -q 'Agent|Task' "$KIT/plugins/kit-core/hooks/hooks.json" || fail "hooks.json matcher lacks Agent|Task"
+  ev() { # agent_type tool subagent_type command [extra-json]
+    python3 -c 'import json,sys; a=sys.argv; e={"agent_type":a[1],"cwd":"/x","tool_name":a[2],"tool_input":{"subagent_type":a[3],"command":a[4]}}
+if a[5:] and a[5]: e["agent_id"]="a1"
+print(json.dumps(e))' "$1" "$2" "$3" "${4:-}" "${5:-}" | python3 "$g"; }
+  for t in Agent Task; do
+    ev supervisor $t kit-code:coder | grep -q '"deny"' || fail "guard allowed supervisor $t kit-code:coder"
+    ev supervisor $t kit-code:reviewer | grep -q '"deny"' || fail "guard allowed supervisor $t kit-code:reviewer"
+    for s in orchestrator Explore kit-code:runner runner; do
+      ev supervisor $t $s | grep -q '"deny"' && fail "guard denied supervisor $t $s"
+    done
+  done
+  ev lead Agent Explore | grep -q '"deny"' && fail "guard denied lead Agent spawn"
+  ev orchestrator Agent kit-code:coder | grep -q '"deny"' && fail "guard denied orchestrator Agent spawn"
+  ev orchestrator Agent kit-code:coder "" 1 | grep -q '"deny"' && fail "guard denied supervised orchestrator spawning coder"
+  ev supervisor Agent "" | grep -q 'no subagent_type' || fail "supervisor deny lacks 'no subagent_type'"
+  for c in "git log > /dev/null" "npm test 2>&1 | tail" "x 2>/dev/null" "make >/dev/null 2>&1" "echo hi >&2" "echo a &> /dev/null" "echo a > /dev/stderr" "ls 2>&1 | cat" "ls 1>/dev/null" "ls 2> /dev/null"; do
+    for a in runner orchestrator; do
+      ev $a Bash "" "$c" 1 | grep -q '"deny"' && fail "guard denied $a '$c'"
+    done
+  done
+  for c in "echo a &> f" "echo a &>> f" "ls 2> err.txt" "ls 2>> err.txt" "ls 1> out.txt" "cat <<< hi
+echo a > f"; do
+    ev orchestrator Bash "" "$c" 1 | grep -q '"deny"' || fail "guard allowed orchestrator '$c'"
+  done
+  for a in runner kit-code:runner Explore; do
+    for id in "" 1; do
+      for c in "sed -i s/a/b/ f" "echo hi > f.txt" "echo hi | tee f.txt"; do
+        ev $a Bash "" "$c" $id | grep -q '"deny"' || fail "guard allowed $a Bash '$c' (agent_id='$id')"
+      done
+      ev $a Bash "" "git status" $id | grep -q '"deny"' && fail "guard denied $a git status"
+      ev $a Write "" "" $id | grep -q '"deny"' || fail "guard allowed $a Write"
+    done
+  done
+  ev runner Write "" "" | grep -q 'read-only' || fail "runner deny reason lacks read-only"
+  ev coder Bash "" "echo hi > f.txt" 1 | grep -q '"deny"' && fail "guard denied coder"
+  return 0
+}
+
 PINNED_CC="$(sed -n 's/^CLAUDE_CODE_VERSION=//p' "$KIT/.versions" 2>/dev/null | head -1)"; PINNED_CC="${PINNED_CC:-2.1.317}"
 have_claude && ! claude --version 2>/dev/null | grep -qF "$PINNED_CC" && echo "WARN claude differs from pinned $PINNED_CC (.versions)"
 echo "contract tests: cases=$CASES kit=$KIT scratch=$WORK home=$HOME claude=$(command -v claude || echo none)"
@@ -282,6 +341,8 @@ run_case 9 "network blocked never hangs" case9
 run_case 12 "agent basic-memory tool lists" case12
 run_case 14 "lead.md and model sonnet generated" case14
 run_case 15 "supervisor agent, guard and kit_block" case15
+run_case 16 "supervisor allowlist and agent rules" case16
+run_case 17 "guard: supervisor spawns, read-only runner" case17
 run_case 13 "basic-memory missing => memory:missing" case13
 
 # 10: git history untouched in every fixture; 11: no .mcp.json / mcpServers anywhere

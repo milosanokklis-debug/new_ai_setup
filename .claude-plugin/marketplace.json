@@ -6,7 +6,7 @@
   "description": "Personal Claude Code kit: core + design + code packs",
   "metadata": {
     "description": "Personal Claude Code kit: core + design + code packs",
-    "version": "0.9.1"
+    "version": "0.9.2"
   },
   "allowCrossMarketplaceDependenciesOn": [
     "addy-agent-skills",
@@ -18,7 +18,7 @@
     {
       "name": "kit-core",
       "source": "./plugins/kit-core",
-      "version": "0.9.1",
+      "version": "0.9.2",
       "description": "Base pack: methodology, orchestrator guard, Playwright, Chrome DevTools, Context7.",
       "dependencies": [
         "agent-skills@addy-agent-skills"
@@ -27,7 +27,7 @@
     {
       "name": "kit-design",
       "source": "./plugins/kit-design",
-      "version": "0.9.1",
+      "version": "0.9.2",
       "description": "UI pack: designer, design-auditor, design skills, shadcn and Motion MCP.",
       "dependencies": [
         "kit-core",
@@ -39,7 +39,7 @@
     {
       "name": "kit-code",
       "source": "./plugins/kit-code",
-      "version": "0.9.1",
+      "version": "0.9.2",
       "description": "Code pack: coder, reviewers, ponytail-review, Semgrep MCP.",
       "dependencies": [
         "kit-core"
