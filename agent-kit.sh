@@ -49,7 +49,7 @@ set -euo pipefail
 
 KIT_NAME="${KIT_NAME:-agent-kit}"
 METHOD="${METHOD:-agent-skills}"
-KIT_VERSION="0.9.1"
+KIT_VERSION="0.9.2"
 GITLEAKS_VERSION="${GITLEAKS_VERSION:-8.30.1}"
 AGENT_SKILLS_SHA="1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62"   # vercel-labs/agent-skills commit for the fetched guideline skills
 SEMGREP_VERSION="1.183.0"   # pinned for setup, vet and the reviewer's MCP server; update on purpose
@@ -673,7 +673,7 @@ MD
   # hooks carry agent_id inside subagents, and agent_type is "solo" in a hands-on session.
   # The "lead" main thread is also checked: it may only Write the handoff file in the temp dir.
   write_json "$kit/plugins/kit-core/hooks/hooks.json" '{
-    "hooks": { "PreToolUse": [ { "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+    "hooks": { "PreToolUse": [ { "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task",
       "hooks": [ { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/orchestrator-guard.py\"" } ] } ] } }'
 
   cat > "$kit/plugins/kit-core/scripts/orchestrator-guard.py" <<'PY'
@@ -692,15 +692,20 @@ import sys
 import tempfile
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+AGENT_TOOLS = {"Agent", "Task"}
+SUPERVISOR_SPAWN = {"orchestrator", "Explore", "kit-code:runner", "runner"}
+READ_ONLY_AGENTS = {"runner", "kit-code:runner", "Explore"}
 INTERPRETER = re.compile(r"\b(python3?|node|bun|deno|ruby)\b")
 SCRIPT_WRITES = re.compile(
     r"""open\([^)]*['"][wax]b?\+?['"]|\.write_(text|bytes)\(|\b(writeFile|appendFile)(Sync)?\(|File\.write\(""")
 SHELL_WRITES = [
     (re.compile(r"\bsed\s+(?:[^|;&\n]*\s)?(?:-[a-zA-Z]*i|--in-place)"), "sed -i"),
     (re.compile(r"\bperl\s+(?:[^|;&\n]*\s)?-[a-zA-Z]*i"), "perl -i"),
-    (re.compile(r"\btee\s+(?:-a\s+)?(?!/dev/null)[^\s|;&]"), "tee to a file"),
-    # > or >> to a file; not 2>/dev/null, >&2, 2>&1, =>, ->, or a comparison inside quotes
-    (re.compile(r"(?<![0-9&<>=-])>>?(?!&|\s*/dev/null|=)"), "a > redirect to a file"),
+    (re.compile(r"\btee\s+(?:-a\s+)?(?!/dev/(?:null|stderr|stdout)\b)[^\s|;&]"), "tee to a file"),
+    # > or >> to a file; not /dev/null|stderr|stdout, >&2, 2>&1, =>, ->, or a comparison inside quotes
+    (re.compile(r"(?<![&<>=-])>>?(?!&|\s*/dev/(?:null|stderr|stdout)\b|=)"), "a > redirect to a file"),
+    # &> and &>> send stdout and stderr to a file
+    (re.compile(r"&>>?(?!\s*/dev/(?:null|stderr|stdout)\b)"), "a &> redirect to a file"),
 ]
 
 
@@ -711,7 +716,7 @@ def split_heredocs(cmd):
         line = lines[i]
         kept.append(line)
         i += 1
-        for m in re.finditer(r"<<-?\s*(['\"]?)([A-Za-z_]\w*)\1", line):
+        for m in re.finditer(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_]\w*)\1", line):
             body = []
             while i < len(lines) and lines[i].strip() != m.group(2):
                 body.append(lines[i])
@@ -779,15 +784,38 @@ def main():
     # ASSUMPTION (unverified): a subagent spawned as "orchestrator" reports agent_type == "orchestrator".
     # Kit subagents (coder, runner, ...) have other types and are unaffected.
     agent = event.get("agent_type")
+    if agent in READ_ONLY_AGENTS:
+        # runner/Explore are read-only; this holds with or without agent_id (subagent or main thread)
+        tool = event.get("tool_name", "")
+        what = tool if tool in EDIT_TOOLS else None
+        if tool == "Bash":
+            what = bash_write((event.get("tool_input") or {}).get("command", ""))
+        if what:
+            who = "Explore" if agent == "Explore" else "runner"
+            deny(f"{who} is read-only (blocked: {what}); return STATUS: blocked and let the orchestrator "
+                 "send the change to kit-code:coder.")
+        return
     if agent == "supervisor":
+        if event.get("tool_name") in AGENT_TOOLS:
+            # ASSUMPTION (unverified until a live test): the spawn tool is named "Agent" (older builds: "Task")
+            # and tool_input.subagent_type holds the requested agent type.
+            ti = event.get("tool_input")
+            sub = ti.get("subagent_type") if isinstance(ti, dict) else None
+            if sub not in SUPERVISOR_SPAWN:
+                deny(f"supervisor may spawn only orchestrator, Explore or kit-code:runner (blocked: "
+                     f"{'no subagent_type' if not sub else repr(sub)}). "
+                     "Code changes go to a fresh orchestrator subagent, which spawns the coder.")
+            return
         if event.get("tool_name") != "Write" or not supervisor_may_write(event):
             deny("supervisor can write only a handoff doc or its run file: docs/handoff/<name>.md or docs/handoff/runs/<name>.md under the project "
                  f"(absolute path, directly in one of those folders; blocked: {event.get('tool_name')}). "
                  "Changes to files go to a fresh orchestrator subagent.")
         return
     if agent == "lead":
-        # The hook matcher covers only Edit|Write|MultiEdit|NotebookEdit|Bash, so "denied" means those tools;
-        # lead's `tools:` frontmatter is what limits every other tool. Here lead may Write only the handoff file.
+        # The hook matcher covers Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task; every other tool is
+        # not hooked, so lead's `tools:` frontmatter is what limits it. Here lead may Write only the handoff file.
+        if event.get("tool_name") in AGENT_TOOLS:
+            return  # spawns are bounded by lead's Agent(...) allowlist
         if event.get("tool_name") != "Write" or not lead_may_write(event):
             deny("lead can write only the handoff file: [zsl-]handoff*.md directly in the temp directory "
                  "(/zsl:handoff output, absolute path), nothing else "
@@ -1777,7 +1805,9 @@ MD
 MD
 
   # Opus agent that runs a handoff doc end to end, one fresh orchestrator per step: claude --agent supervisor
-  local stools="Agent(orchestrator, Explore, kit-code:runner), Read, Glob, Grep, Write, ToolSearch, AskUserQuestion, TaskCreate, TaskUpdate, TaskList, TaskGet"
+  # The allowlist bounds nested spawns (observed): an orchestrator started by the supervisor can spawn
+  # only what is listed here, so it must include everything the orchestrator may need ($spawn).
+  local stools="Agent(orchestrator, $spawn), Read, Glob, Grep, Write, ToolSearch, AskUserQuestion, TaskCreate, TaskUpdate, TaskList, TaskGet"
   [ "$memory" = 1 ] && stools+=", mcp__basic-memory__bm_search, mcp__basic-memory__bm_read, mcp__basic-memory__bm_list, mcp__basic-memory__bm_find, mcp__basic-memory__bm_context, mcp__basic-memory__bm_write"
   cat > "$dir/supervisor.md" <<MD
 ---
@@ -1790,7 +1820,7 @@ tools: $stools
 MD
   cat >> "$dir/supervisor.md" <<'MD'
 <!-- generated by agent-kit.sh project; re-running it overwrites this file -->
-You run a handoff document from start to finish. You plan and dispatch; you never change project files. Each step goes to a NEW `orchestrator` subagent, so every step starts with a clean context. You can Write only handoff documents (docs/handoff/<name>.md) and your run file (docs/handoff/runs/<name>.md); a hook blocks every other path, and Bash.
+You run a handoff document from start to finish. You plan and dispatch; you never change project files. Each step goes to a NEW `orchestrator` subagent, so every step starts with a clean context. You can Write only handoff documents (docs/handoff/<name>.md) and your run file (docs/handoff/runs/<name>.md); a hook blocks every other path, and you have no Bash. A hook also lets you spawn only orchestrator, Explore and kit-code:runner; the coders and reviewers are spawned by the orchestrators.
 
 ## Reading the project
 To decide questions, read project files yourself with Read, Glob and Grep (README, AGENTS.md, CLAUDE.md, the code), or send Explore for wider searches. Do not guess what the files can tell you.
@@ -1802,9 +1832,11 @@ When asked to write a handoff (not run one), create `docs/handoff/<slug>.md` wit
 - Read the handoff fully. Start with `run <path>` or `resume docs/handoff/runs/<slug>.md`. On resume, continue from the first step that is not done.
 - Write the run file `docs/handoff/runs/<slug>.md`: numbered steps, each with goal, files or area, acceptance check and status (todo|doing|done|blocked); a "Limits" section copied from the handoff (what you may and may not do); a "Decisions" log. Mirror the steps in the task list.
 - Pre-flight once, through the runner: Basic Memory reachable (if not, stop and tell the user), right branch, state of the working tree.
+- Pre-flight probe, once per run: dispatch one fresh orchestrator whose only task is to spawn kit-code:coder and kit-code:reviewer with a no-op prompt ("reply OK, change nothing") and report which of them spawned. If either fails, that is a stop condition: write the reason at the top of the run file.
 
 ## Loop
-- For the next todo step, spawn a NEW orchestrator. Never resume, fork or SendMessage an old one. The prompt is self-contained: the step, the relevant handoff excerpts, the decisions so far, the limits, and this report format (20 lines or fewer): `STATUS: done|blocked|needs-decision`, what changed, checks and their real result, commit hash, open questions with options. Tell it that it is supervised.
+- For the next todo step, spawn a NEW orchestrator. Never resume, fork or SendMessage an old one. The prompt is self-contained: the step, the relevant handoff excerpts, the decisions so far, the limits, and this report format (20 lines or fewer): `STATUS: done|blocked|needs-decision`, what changed, checks and their real result, commit hash, `REVIEW: reviewer=<ran|not-run> simplicity=<ran|not-run>`, open questions with options. Tell it that it is supervised.
+- Never accept `STATUS: done` with `REVIEW: not-run` for a step that changed code. A report with no REVIEW line counts as `REVIEW: not-run`. Send a fresh orchestrator back to run the reviewers, or stop.
 - needs-decision: decide it yourself from the handoff, the code and sensible defaults. Use Explore or the runner for evidence. Log the decision, then dispatch a fresh orchestrator.
 - A failed step gets one fresh retry with your diagnosis. A second failure is a stop condition.
 - After each step update the run file and the task list, then go straight on. Never ask "shall I continue". Never suggest /clear or /zsl:handoff during a run.
@@ -1892,14 +1924,15 @@ MD
 The dispatch prompt says when a supervisor started you (a fresh orchestrator per step). Then:
 - The supervisor's prompt carries the user's authority, within the limits it states. If the limits are silent: commit locally at the end of the step on the working branch, and never push.
 - Finish the whole step without pausing. Put questions in the report, never ask them mid-step.
-- Return the report format the prompt asks for (STATUS: done|blocked|needs-decision, what changed, checks and their real result, commit hash, open questions with options), in 20 lines or fewer.
+- Return the report format the prompt asks for (STATUS: done|blocked|needs-decision, what changed, checks and their real result, commit hash, open questions with options), plus the line `REVIEW: reviewer=<ran|not-run> simplicity=<ran|not-run>` (also in a `STATUS: blocked` report), in 20 lines or fewer.
+- If kit-code:coder (or coder-lite, designer), kit-code:reviewer or kit-code:simplicity-reviewer cannot be spawned, or a spawn is refused, return `STATUS: blocked` with `reason: agent unavailable: <names>`. Never make edits through the runner or the shell, and never skip the reviewer pass to get around it.
 - Don't suggest /clear, /compact, /zsl:handoff or `claude --agent lead`.
 MD
     if is_kit_dir "$proj"; then cat <<'MD'
 
 ## This repo is the kit
 The plugins your agents run come from this checkout's plugins/ (the kit marketplace points here). So you can improve the kit with your own agents:
-- Changes to agent-kit.sh, plugins/, .claude-plugin/marketplace.json and tests/ go to the coder like any other code. A change under plugins/ or to marketplace.json also needs KIT_VERSION in agent-kit.sh and every local plugin version bumped to match; have the runner run `tests/version-bump.sh`, `bash -n agent-kit.sh tests/*.sh`, `tests/skills.sh` and `tests/contract.sh --cases 8,10,11,12,14,15`.
+- Changes to agent-kit.sh, plugins/, .claude-plugin/marketplace.json and tests/ go to the coder like any other code. A change under plugins/ or to marketplace.json also needs KIT_VERSION in agent-kit.sh and every local plugin version bumped to match; have the runner run `tests/version-bump.sh`, `bash -n agent-kit.sh tests/*.sh`, `tests/skills.sh` and `tests/contract.sh --cases 8,10,11,12,14,15,16,17`.
 - After those changes pass review and checks, you may run `./agent-kit.sh self` yourself (it is the one install command you may run unasked): it reloads this repo's own packs from the checkout and rewrites the files under .claude/agents. Then tell the user to run /reload-plugins or restart Claude Code: plugins load in place from this checkout, and agents load when a session starts. It never installs anything from outside the kit's own marketplace.json.
 - Don't let an agent hand-edit .claude/agents/*.md or the agent-kit block in CLAUDE.md: `self` regenerates them. Change the generator in agent-kit.sh instead.
 - A broken orchestrator-guard or agent file can lock you out; if that happens, tell the user to fix it with `claude --agent solo`.

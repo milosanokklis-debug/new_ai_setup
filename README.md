@@ -11,6 +11,13 @@ This repo is also a Claude Code plugin marketplace. The `plugins/` folder holds 
 
 ---
 
+## What's new in 0.9.2
+
+- **Supervised orchestrators can spawn coders and reviewers.** The supervisor's `Agent(...)` allowlist bounds what its nested orchestrators may spawn (observed), so it now lists every agent the orchestrator uses. A guard rule keeps the supervisor itself to spawning `orchestrator`, `Explore` and `kit-code:runner`.
+- `runner` and `Explore` are read-only: the guard blocks file edits and Bash writes from them.
+- A supervised orchestrator returns `STATUS: blocked` (`reason: agent unavailable: <names>`) instead of working around a missing coder or reviewer, and reports `REVIEW: reviewer=<ran|not-run> simplicity=<ran|not-run>`. The supervisor never accepts a code step as done with `REVIEW: not-run`, and runs a one-time pre-flight probe that a coder and a reviewer can be spawned.
+- After upgrading the kit, re-run `./agent-kit.sh project <path>` in each project to regenerate its agent files.
+
 ## What's new in 0.9
 
 - **`supervisor` (Opus).** Runs a handoff document end to end without check-ins: `claude --agent supervisor "run docs/handoff/<file>.md"`. It writes a run file (`docs/handoff/runs/<slug>.md`: steps, limits, decisions) and spawns a **fresh `orchestrator` subagent for each step**, so every step starts with a clean context (the same effect as `/clear`). Continue an interrupted run with `resume docs/handoff/runs/<slug>.md`. The default agent in `settings.json` is now the supervisor; plain work runs with `claude --agent orchestrator`.
